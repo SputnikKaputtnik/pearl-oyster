@@ -52,6 +52,8 @@ Curated outputs: `research/runs/`. Raw data (2 GB Procmon log) stays in `C:\Tool
 ## Tooling conclusions
 
 * RenderDoc cannot capture Moxie (legacy GL context) and destabilises it → use **apitrace**
+  (14.0 installed at `C:\Tools\apitrace\apitrace-14.0-win64`, SHA-256 of the release archive
+  `32c70268…78147dc3`)
   (records legacy GL, replays, dumps frames/state) or NVIDIA Nsight Graphics for GL frame
   analysis in Phase 2.
 * RenderDoc's UI auto-probes adb devices on start (it ran `adb root` and three `getprop`
