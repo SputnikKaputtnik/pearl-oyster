@@ -1,0 +1,21 @@
+# Model / animation readers, decoders and writers
+Resource::readBinaryHeader
+Resource::writeBinaryHeader
+ModelResource::onLoad
+ModelResource::read
+ModelResource::readMesh
+ModelResource::readBoneGroup
+ModelResource::readBaseModel
+ModelResource::buildVertexLayout
+ModelResource::write
+ModelResource::writeMesh
+VertexCompression::
+VertexAnimQuantizer::
+VertexAnimator::
+AnimResource::
+BitStream::
+VertexData::getAttributeName
+VertexData::getAttributeIndex
+Material::read
+Material::load
+MaterialPass::read
