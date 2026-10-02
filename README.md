@@ -54,6 +54,7 @@ Bulk derived data (string dumps, JSON dumps of the Lua data) is regenerated into
 | `tools/procmon_filter.py` | reduce a Procmon CSV to one process, per-file access summary |
 | `tools/rdoc_capture.py` | RenderDoc inject + triggered captures (qrenderdoc --python); not usable for Moxie |
 | `tools/apitrace_run.py` | apitrace GL capture with timed WM_CLOSE |
+| `tools/thread_sampler.py` | sample thread instruction pointers of a running process → module+offset per thread |
 | `tools/ghidra/*.java` | headless Ghidra scripts: string users, decompile by name |
 
 Requirements: `pip install pefile lupa`.
