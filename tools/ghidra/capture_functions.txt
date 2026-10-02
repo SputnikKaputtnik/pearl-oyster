@@ -1,0 +1,27 @@
+# Functions relevant to CLI parsing, bootstrap, capture/replay and story timing
+Application::onParseCommandLine
+LApplication::onParseCommandLine
+LApplication::runEntrypoint
+LApplication::onRegisterLuaEnv
+LApplication::onInitialize
+LApplication::onUpdate
+LApplication::onRender
+CommandLine::optional
+CommandLine::parse
+CommandLine::getUsageString
+SGReplay::record
+SGReplay::replay
+SGReplay::onUpdate
+Time::tick
+Time::step
+Time::setFixedTimeStep
+Time::setErrorCorrectParams
+Time::setTimeScale
+GlobalTime::onUpdate
+RenderManager::captureThumbnail
+LEnvMoxie
+RenderManager::draw
+RenderManager::enableRenderToDisk
+RenderManager::resize
+LApplication::prepare
+StoryPlayer::onDraw

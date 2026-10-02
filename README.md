@@ -18,6 +18,7 @@ Phase 1 (forensics) — complete for the Steam build 1340090.
 | [docs/launch-chain.md](docs/launch-chain.md) | Steam → exe → engine → Lua → scene loading |
 | [docs/runtime-observations.md](docs/runtime-observations.md) | observed runs: modules, file access, writes, RenderDoc result |
 | [docs/runtime-analysis.md](docs/runtime-analysis.md) | PE analysis: graphics, VR, audio, Lua, CLI switches |
+| [docs/cli-reference.md](docs/cli-reference.md) | command-line options decoded with Ghidra, capture/record formats |
 | [docs/file-formats.md](docs/file-formats.md) | `.mxm`, `.mxa`, `.mxb`, `.shd`, `.pfb`, DDS, OGG, HRTF — first characterization |
 | [docs/reference-capture.md](docs/reference-capture.md) | how to record ground truth from the original |
 | [docs/quest-port-plan.md](docs/quest-port-plan.md) | route assessment and Phase 2 plan |
@@ -51,6 +52,8 @@ Bulk derived data (string dumps, JSON dumps of the Lua data) is regenerated into
 | `tools/observe_run.py` | launch + observe a run from outside (modules, open files, clean WM_CLOSE) |
 | `tools/procmon_filter.py` | reduce a Procmon CSV to one process, per-file access summary |
 | `tools/rdoc_capture.py` | RenderDoc inject + triggered captures (qrenderdoc --python); not usable for Moxie |
+| `tools/apitrace_run.py` | apitrace GL capture with timed WM_CLOSE |
+| `tools/ghidra/*.java` | headless Ghidra scripts: string users, decompile by name |
 
 Requirements: `pip install pefile lupa`.
 

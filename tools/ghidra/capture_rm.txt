@@ -1,0 +1,5 @@
+RenderManager::capture
+RenderManager::enableHq
+RenderManager::onCapture
+RenderManager::writeCapture
+RenderManager::saveCapture
