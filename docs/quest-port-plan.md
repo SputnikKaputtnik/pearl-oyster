@@ -55,14 +55,16 @@ Each run of the original is announced with launch count and duration before it s
 1. **Runtime observation of the original (1 short announced run, working copy)**
    - module list (is `moxie.v1`/FreeImage loaded?), cwd, file-open order (Procmon or ETW),
      which `app.lua` runs, log output.
-   - one RenderDoc (OpenGL) frame capture in a characteristic shot → exact draw calls,
-     render targets, MSAA, post chain, uniform values. This becomes the render-semantics spec.
+   - **done** for module list, cwd, file-open order, app script (`runtime-observations.md`).
+   - RenderDoc failed (legacy GL context unsupported, crash). Next: **apitrace** capture of a
+     characteristic shot → exact draw calls, render targets, MSAA, post chain, uniform values.
+     This becomes the render-semantics spec.
 2. **CLI semantics via Ghidra** (`C:\Tools\ghidra`, moxie.v2 with export names):
    argument syntax for `-record/-replay/-fixedtimestep/-rendertodisk/-loadfile/-scene/-segment`.
    Then an announced test of a fixed-timestep render of one shot.
 3. **Format work (tools in `tools/`, outputs to `C:\Tools\pearl-work`)**
    - `.mxm` parser: materials/passes, meshes, vertex layout, indices, transform hierarchy;
-     validated against vertex buffers captured with RenderDoc.
+     validated against vertex buffers captured with apitrace.
    - `.mxa` kind 2 (transform tracks) then kind 1 (vertex animation dequantization);
      validated by rendering a frame offline and diffing against the reference capture.
    - `.pfb`/material render-state block, `.mxb` structure, `.fnt`, `.mxhrtf`.

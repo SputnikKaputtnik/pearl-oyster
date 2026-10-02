@@ -43,7 +43,7 @@ window, hand argv + cwd to `moxieLoad/StoryPrepare/StoryPlay`, pump messages, ca
 * **[F]** Some textures are ETC2/"ETA8" DDS (film grain, paper "tooth" texture, particle
   sprites, splash). **[I]** decoded via PVRTexLib on desktop.
 * **[?]** Exact GL entry points used at runtime (GLEW table lists every GL function) — needs
-  an API trace (apitrace / RenderDoc) in Phase 2.
+  an API trace (apitrace; RenderDoc cannot attach to the legacy context, see runtime-observations.md) in Phase 2.
 
 ## VR / SteamVR
 

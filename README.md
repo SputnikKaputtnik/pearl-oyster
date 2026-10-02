@@ -16,6 +16,7 @@ Phase 1 (forensics) — complete for the Steam build 1340090.
 | [docs/preservation.md](docs/preservation.md) | reference installation, preservation copy, verification, user-state files |
 | [docs/architecture.md](docs/architecture.md) | runtime vs content layers, native engine services, how Lua drives the story, camera path |
 | [docs/launch-chain.md](docs/launch-chain.md) | Steam → exe → engine → Lua → scene loading |
+| [docs/runtime-observations.md](docs/runtime-observations.md) | observed runs: modules, file access, writes, RenderDoc result |
 | [docs/runtime-analysis.md](docs/runtime-analysis.md) | PE analysis: graphics, VR, audio, Lua, CLI switches |
 | [docs/file-formats.md](docs/file-formats.md) | `.mxm`, `.mxa`, `.mxb`, `.shd`, `.pfb`, DDS, OGG, HRTF — first characterization |
 | [docs/reference-capture.md](docs/reference-capture.md) | how to record ground truth from the original |
@@ -47,6 +48,9 @@ Bulk derived data (string dumps, JSON dumps of the Lua data) is regenerated into
 | `tools/lua_requires.py` | Lua `require` dependency tree / Mermaid graph |
 | `tools/reference_check.py` | do all `package:path` references resolve? |
 | `tools/package_manifest_check.py` | Spotlight build manifests vs files on disk |
+| `tools/observe_run.py` | launch + observe a run from outside (modules, open files, clean WM_CLOSE) |
+| `tools/procmon_filter.py` | reduce a Procmon CSV to one process, per-file access summary |
+| `tools/rdoc_capture.py` | RenderDoc inject + triggered captures (qrenderdoc --python); not usable for Moxie |
 
 Requirements: `pip install pefile lupa`.
 

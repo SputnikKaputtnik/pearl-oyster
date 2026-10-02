@@ -35,11 +35,11 @@ Legend: **[F]** directly observed fact (evidence given) · **[I]** strong infere
 
 Notes:
 * **[F]** `win64/` ships the **32-bit (i386)** `msvcp140/vcruntime140/concrt140.dll` next to a
-  64-bit `storyplayer.exe`. **[I]** The 64-bit process cannot load them and resolves the system
-  VC++ 2015 x64 runtime installed by `_CommonRedist` instead.
-* **[F]** Neither `storyplayer.exe` nor `moxie.v2` references `moxie.v1.shared.windows.dll`
-  (no import, no string). **[I]** v1 is a legacy engine for older stories and is unused by
-  Pearl. **[?]** Confirm with a module list at runtime.
+  64-bit `storyplayer.exe`; at runtime the process uses `C:\Windows\System32cruntime140.dll`
+  / `msvcp140.dll` instead (observed).
+* **[F]** Neither `storyplayer.exe` nor `moxie.v2` references `moxie.v1.shared.windows.dll`,
+  and it is **not loaded at runtime** (module lists of run01/run02); same for `FreeImage.dll`.
+  **[I]** v1 is a legacy engine for older stories.
 * **[F]** The Windows DLL contains Android strings (`ANDROID_APK_VERSION_CODE`,
   `android.os.Build.VERSION.SDK_INT`, `libmoxie`). The Lua layer calls `Android.acquireScreen()`
   and loads `story/scripts/platform/android.lua` on Windows too. **[I]** One cross-platform
@@ -98,7 +98,8 @@ built from and a Unix timestamp — FBX → `.mxm`/`.mxa`, PNG/TGA/PSD/JPG → `
 
 ## 4. How the Lua layer drives the story
 
-Bootstrap **[F]** (`pearl_vrcam/scripts/app.lua`, near-identical to `story/scripts/app.lua`):
+Bootstrap **[F]**: the engine runs the generic `story/scripts/app.lua` (observed with Procmon;
+`pearl_vrcam/scripts/app.lua` exists but is never loaded — see `runtime-observations.md`):
 
 1. `require "story/scripts/story"` → `story/scripts/core` → `common/scripts/core` + the whole
    framework (`fsm, scheduler, commands, conditions, sceneplayer, camerarigcontroller, …`).
@@ -128,8 +129,8 @@ State machine semantics (`story/scripts/fsm.lua`) **[F]**:
   `cameraSetProjectiveOffset` 2, `cameraSetYawLock` 1, `exit` 1.
 * **`syncToSound` is a no-op in this build** (body commented out, `commands.lua:498–507`) **[F]**.
   Audio and animation therefore run independently on the same global clock; there is no
-  audio-driven resync. `Time.setErrorCorrectParams(true, 0.25)` is only called by the generic
-  `story/scripts/app.lua`, not by Pearl's `app.lua` **[F]**.
+  audio-driven resync. `Time.setErrorCorrectParams(true, 0.25)` (generic `app.lua`) **is active**
+  in the shipped configuration **[F]**; its native meaning is **[?]**.
 
 Story graph (Main FSM, 68 states) **[F]**: intro `start_standing → you_sat_down → you_are_sitting
 → you_are_sitting2 → fade_out → seq1_calibrate → …` through `seq1_*` … `seq6_*` to

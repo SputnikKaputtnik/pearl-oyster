@@ -38,15 +38,15 @@ Exact argument syntax of these switches is **[?]** and is the first thing to est
 | Quantity | Method |
 |---|---|
 | Camera pose (per frame) | `-record` file (native format **[?]**) + our own logger in a proxy `openvr_api.dll` (logs `WaitGetPoses` results and compositor submit timestamps) |
-| Screenshots | `-rendertodisk` with fixed timestep at fixed resolution, mono and per-eye; additionally RenderDoc single-frame captures (GL) for exact render-target contents |
+| Screenshots | `-rendertodisk` with fixed timestep at fixed resolution, mono and per-eye; additionally **apitrace** captures (RenderDoc does not support Moxie's legacy GL context and crashed it — run03) for exact render-target contents |
 | Frame timing | proxy openvr_api.dll timestamps for `WaitGetPoses`/`Submit`; `-stats` output |
 | Animation timing | fixed-timestep renders at 90 fps vs 30 fps of the same shot → determines whether vertex animation is interpolated or stepped; FSM log timestamps |
 | Audio timing | WASAPI loopback capture of the mix during a recorded run, aligned to the FSM log; offline compare with decoded OGG start times |
-| Render resolution | proxy logs `GetRecommendedRenderTargetSize` + submitted texture size; RenderDoc texture dims |
-| Anti-aliasing | RenderDoc: MSAA sample count of render targets for `-msaa 2`; resolve path; `-ssaa` scaling |
+| Render resolution | proxy logs `GetRecommendedRenderTargetSize` + submitted texture size; apitrace texture dims |
+| Anti-aliasing | apitrace state dump: MSAA sample count of render targets for `-msaa 2`; resolve path; `-ssaa` scaling |
 
 The proxy-DLL approach changes only the working copy (one DLL swapped next to the exe);
-original files remain untouched. It is optional — RenderDoc/apitrace and the engine's own
+original files remain untouched. It is optional — apitrace and the engine's own
 switches may be sufficient.
 
 Saves already present (`saves/checkpoint_1..37.dat`, from this user's past sessions) contain
