@@ -1,0 +1,5 @@
+IVRSystem_012
+IVRCompositor_016
+Unable to init VR runtime: %s
+u_maxAlpha
+u_minAlpha

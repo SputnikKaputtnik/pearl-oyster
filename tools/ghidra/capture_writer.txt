@@ -1,0 +1,3 @@
+Bitmap::save
+Surface::save
+0x1801374b0

@@ -19,6 +19,7 @@ Phase 1 (forensics) — complete for the Steam build 1340090.
 | [docs/runtime-observations.md](docs/runtime-observations.md) | observed runs: modules, file access, writes, RenderDoc result |
 | [docs/runtime-analysis.md](docs/runtime-analysis.md) | PE analysis: graphics, VR, audio, Lua, CLI switches |
 | [docs/cli-reference.md](docs/cli-reference.md) | command-line options decoded with Ghidra, capture/record formats |
+| [docs/engine-internals.md](docs/engine-internals.md) | time model, capture pipeline, VR frame loop (Ghidra) |
 | [docs/file-formats.md](docs/file-formats.md) | `.mxm`, `.mxa`, `.mxb`, `.shd`, `.pfb`, DDS, OGG, HRTF — first characterization |
 | [docs/reference-capture.md](docs/reference-capture.md) | how to record ground truth from the original |
 | [docs/quest-port-plan.md](docs/quest-port-plan.md) | route assessment and Phase 2 plan |
