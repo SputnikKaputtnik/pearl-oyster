@@ -58,3 +58,46 @@ Curated outputs: `research/runs/`. Raw data (2 GB Procmon log) stays in `C:\Tool
   analysis in Phase 2.
 * RenderDoc's UI auto-probes adb devices on start (it ran `adb root` and three `getprop`
   queries against the connected Android/Quest device; nothing installed or started).
+
+## run04 — apitrace (2026-10-03 01:03, SteamVR active, 60 s)
+
+`tools/apitrace_run.py` → `C:\Tools\pearl-work\runs\run04\pearl.trace` (10 MB, 92 558 calls).
+Under apitrace the game **stalled after 21 VR frames** (42 eye submits), still in the
+startup/preload phase, and had to be terminated; apitrace also caught 50 LuaJIT error
+exceptions (`0xE24C4A02`, LuaJIT's SEH-based `error()`/`pcall` mechanism) and flushed on each.
+Replays (`glretrace`): snapshots of single-sample targets work; MSAA targets cannot be read
+back; a full state dump crashed glretrace (shared-context replay is imperfect:
+`wglShareLists` fails, `wglDXLockObjectsNV` unsupported). Raw trace, dump and PNGs stay in
+the work dir (they contain rendered Pearl imagery).
+
+Facts from the trace **[F]**:
+* Context setup: pixel format RGBA8 + D24S8, double-buffered, **legacy `wglCreateContext`**
+  (no `wglCreateContextAttribsARB` → compatibility context), **4 contexts sharing lists**
+  (main + loader threads; draw calls observed on threads @0 and @2), `wglSwapIntervalEXT(1)`.
+* Driver caps queried at start include `GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT` (16) and the
+  compressed-format list (S3TC + ETC2/EAC + ASTC on this NVIDIA driver).
+* Per-eye render target **2612×2852** (= SteamVR recommended size × `-ssaa 1.0`), colour
+  `GL_TEXTURE_2D_MULTISAMPLE` RGBA8 (and one RGB target), depth `DEPTH24_STENCIL8`
+  renderbuffer, **2× MSAA**, resolved with `glBlitFramebuffer(GL_NEAREST)`.
+* Post-processing chain on reduced targets: 1306×1426 (½, MSAA 2×), 653×713 (¼), 326×356 (⅛),
+  each pass = clear + full-screen strip + MSAA resolve blit.
+* Clear colours per render view exactly as in `pearlpackage/rendergraphs/*.lua`
+  (`RV1` 0.5 grey, `RV2` (0.5,0.5,0,1), `RV3` (0,0,0.5,0)).
+* Eye hand-off: `wglDXLockObjectsNV` + `glCopyImageSubData` of each resolved eye texture into
+  a D3D11-shared texture (SteamVR's OpenGL submit path), then `glFlush`.
+* Desktop window shows a separate **title card** ("Please sit down, put on your VR headset…",
+  key help `C` calibrate camera, `M` mirror display, `V` toggle VR), not the eye view.
+* Texture sampling: all 67 texture parameter sets use `GL_TEXTURE_MIN_FILTER = GL_LINEAR`
+  and anisotropy 1; **no `glGenerateMipmap` and no mip levels uploaded** → the original
+  samples every texture **without mipmaps** (expect shimmer on minified detail). DXT5 is
+  uploaded compressed (`glCompressedTexImage2D`); the ETC2 textures appear as uncompressed
+  `GL_RGB` uploads (512², 1024²) → decoded on the CPU **[I: PVRTexLib]**.
+* Draw path: VAOs + `glDrawElements(GL_UNSIGNED_SHORT)` for meshes, client-memory vertex
+  arrays for full-screen quads, `glUniformMatrix4fv` dominant (15 204 calls in 21 frames),
+  `GL_FRAMEBUFFER_SRGB` off (gamma in shader), 104 shader objects compiled.
+* A scene draw at call 92274: depth test `GL_LESS`, culling on, blending
+  `SRC_ALPHA / ONE_MINUS_SRC_ALPHA`, half-resolution view.
+
+Next capture attempt (needs approval): trace in **desktop/mono mode** (no SteamVR session),
+which avoids the DX-interop submit path where the stall happened, to capture actual story
+frames; and/or a proxy `openvr_api.dll` that dumps eye textures directly.
