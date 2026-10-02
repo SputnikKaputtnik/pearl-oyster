@@ -6,6 +6,9 @@ Each sample: SuspendThread → GetThreadContext(CONTEXT_CONTROL) → ResumeThrea
 thread. RIPs are mapped to module+offset (EnumProcessModulesEx/GetModuleInformation) and
 aggregated per thread, plus the per-thread CPU time delta to show which threads are busy.
 Purely observational: the target is only paused for microseconds per sample.
+With --stack, 8 KB above RSP are read and qwords pointing into "interesting" modules
+(default: moxie*, storyplayer*, lua51*) are reported as candidate return addresses
+(heuristic stack scan, no unwinding).
 """
 import collections
 import ctypes
@@ -65,6 +68,26 @@ k32.SuspendThread.argtypes = [wintypes.HANDLE]
 k32.ResumeThread.argtypes = [wintypes.HANDLE]
 k32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
 k32.CloseHandle.argtypes = [wintypes.HANDLE]
+k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                                  ctypes.POINTER(ctypes.c_size_t)]
+INTERESTING = ("moxie", "storyplayer", "lua51")
+
+
+def stack_hits(hproc, rsp, mods, limit=12):
+    buf = (ctypes.c_uint64 * 1024)()
+    got = ctypes.c_size_t()
+    if not k32.ReadProcessMemory(hproc, ctypes.c_void_p(rsp), buf, ctypes.sizeof(buf), ctypes.byref(got)):
+        return []
+    out = []
+    for i in range(got.value // 8):
+        v = buf[i]
+        for base, size, name in mods:
+            if base <= v < base + size and name.lower().startswith(INTERESTING):
+                out.append(f"{name}+0x{v - base:x}")
+                break
+        if len(out) >= limit:
+            break
+    return out
 
 
 def modules(pid):
@@ -91,6 +114,8 @@ def where(rip, mods):
 
 
 def main(argv):
+    use_stack = "--stack" in argv
+    argv = [a for a in argv if a != "--stack"]
     pid = int(argv[1])
     n = int(argv[2]) if len(argv) > 2 else 50
     interval = (int(argv[3]) if len(argv) > 3 else 20) / 1000
@@ -98,6 +123,8 @@ def main(argv):
     mods = modules(pid)
     cpu0 = {t.id: t.user_time + t.system_time for t in proc.threads()}
     hits = collections.defaultdict(collections.Counter)
+    stacks = collections.defaultdict(collections.Counter)
+    hproc = k32.OpenProcess(PROCESS_QUERY_VM, False, pid)
     ctx = CONTEXT()
     for _ in range(n):
         for t in proc.threads():
@@ -108,6 +135,8 @@ def main(argv):
                 ctx.ContextFlags = CONTEXT_CONTROL
                 if k32.GetThreadContext(h, ctypes.byref(ctx)):
                     hits[t.id][where(ctx.Rip, mods)] += 1
+                    if use_stack:
+                        stacks[t.id][" < ".join(stack_hits(hproc, ctx.Rsp, mods))] += 1
                 k32.ResumeThread(h)
             k32.CloseHandle(h)
         time.sleep(interval)
@@ -115,10 +144,14 @@ def main(argv):
     rep = []
     for tid, c in hits.items():
         busy = round(cpu1.get(tid, 0) - cpu0.get(tid, 0), 3)
-        rep.append({"tid": tid, "cpu_s": busy, "top": c.most_common(8)})
+        rep.append({"tid": tid, "cpu_s": busy, "top": c.most_common(8),
+                    "stacks": stacks[tid].most_common(3)})
     rep.sort(key=lambda r: -r["cpu_s"])
     for r in rep[:8]:
         print(f"tid {r['tid']:6d} cpu {r['cpu_s']:6.2f}s  " + "  ".join(f"{k} x{v}" for k, v in r["top"][:4]))
+        for st, n in r["stacks"][:1]:
+            if st:
+                print(f"      stack x{n}: {st}")
     if len(argv) > 4:
         json.dump({"pid": pid, "modules": [(hex(b), s, nm) for b, s, nm in mods], "threads": rep},
                   open(argv[4], "w"), indent=1)
