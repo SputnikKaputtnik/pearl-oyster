@@ -210,3 +210,20 @@ Timeline: the only good VR run before (run02, 00:50) preceded the RenderDoc cras
 nothing about `-playblast`/`-fixedtimestep` in VR. Practical rule: after any crash/kill of a
 VR session, restart SteamVR before the next VR measurement. Not yet tested in a clean
 environment: VR + `-playblast`/`-fixedtimestep`.
+
+## run11 — built-in capture in VR, clean SteamVR (2026-10-03)
+
+Steam line + `-fixedtimestep 33.3333 -playblast <pre-created abs dir>`, SteamVR freshly
+restarted. **Works**: 496 TGAs = **248 stereo pairs** (`screenshot_eye0_<2n>` /
+`screenshot_eye1_<2n+1>`), each 2612×2852 24-bit (SteamVR recommended size × `-ssaa 1.0`),
+11 GB in 20 s; process healthy (52 threads, CPU ≈75 %), clean exit on WM_CLOSE (rc 0).
+Content: intro (night desert, multilingual "Please sit down" prompt, seat icon turning green),
+with visible stereo disparity; only the very first pair is black.
+
+Throughput ≈12 stereo frames/s (disk-bound: ≈45 MB per pair); with the fixed step the story
+advanced 248/30 ≈ 8.3 s. A full-film stereo capture would be ≈10 500 pairs ≈ 470 GB — use
+selected shots (`-loadfile`/`-checkpoint`) or a lower `-ssaa` for overview captures.
+
+**Conclusion:** the built-in capture yields true per-eye reference frames from the original
+build without modifying it. Requirements: pre-created absolute directory; SteamVR in a clean
+state (restart after any crashed/killed VR session).
