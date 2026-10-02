@@ -73,20 +73,26 @@ k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_voi
 INTERESTING = ("moxie", "storyplayer", "lua51")
 
 
-def stack_hits(hproc, rsp, mods, limit=12):
-    buf = (ctypes.c_uint64 * 1024)()
-    got = ctypes.c_size_t()
-    if not k32.ReadProcessMemory(hproc, ctypes.c_void_p(rsp), buf, ctypes.sizeof(buf), ctypes.byref(got)):
-        return []
+def stack_hits(hproc, rsp, mods, limit=12, max_bytes=16384):
+    """Scan the stack upwards from RSP page by page (stops at the first unreadable page)."""
     out = []
-    for i in range(got.value // 8):
-        v = buf[i]
-        for base, size, name in mods:
-            if base <= v < base + size and name.lower().startswith(INTERESTING):
-                out.append(f"{name}+0x{v - base:x}")
-                break
-        if len(out) >= limit:
+    addr = rsp
+    end = rsp + max_bytes
+    while addr < end and len(out) < limit:
+        chunk = min(0x1000 - (addr & 0xFFF), end - addr)
+        buf = (ctypes.c_uint64 * (chunk // 8))()
+        got = ctypes.c_size_t()
+        if not k32.ReadProcessMemory(hproc, ctypes.c_void_p(addr), buf, chunk, ctypes.byref(got)) or not got.value:
             break
+        for i in range(got.value // 8):
+            v = buf[i]
+            for base, size, name in mods:
+                if base <= v < base + size and name.lower().startswith(INTERESTING):
+                    out.append(f"{name}+0x{v - base:x}")
+                    break
+            if len(out) >= limit:
+                break
+        addr += chunk
     return out
 
 
