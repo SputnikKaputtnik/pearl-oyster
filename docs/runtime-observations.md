@@ -101,3 +101,27 @@ Facts from the trace **[F]**:
 Next capture attempt (needs approval): trace in **desktop/mono mode** (no SteamVR session),
 which avoids the DX-interop submit path where the stall happened, to capture actual story
 frames; and/or a proxy `openvr_api.dll` that dumps eye textures directly.
+
+## run05 — apitrace in desktop mode (2026-10-03 ~01:15, 75 s)
+
+VR hidden for this process only (`VR_OVERRIDE` pointing to an empty directory; SteamVR kept
+running, no system change). Confirmed: no `vrclient` session was opened (no new entry in
+Steam's `vrclient_storyplayer.txt`). Result: **the same stall** — 25 desktop frames
+(title card + preload), 9.8 MB trace, again exactly 50 LuaJIT exceptions, `WM_CLOSE`
+ignored, terminated.
+
+Diagnosis **[F]**: in run04 and run05 the loader thread (`@2`, shared context) issues exactly
+2131 calls (buffer uploads, 26 shader compiles, many `glFinish`) and then **no further GL
+call** (last at call 7569 of 34 929); the main thread keeps rendering title/preload frames and
+then stops. **[I]** Under apitrace the resource loader blocks (cause unknown: candidate
+interactions are apitrace's global call lock with the multi-context loader, or its handling
+of LuaJIT's SEH-based errors). This happens independently of VR, so the earlier VR stall was
+not the DX-interop path. Without apitrace the same build renders the story in the headset
+(run02, user-confirmed visually).
+
+Consequence: whole-API interception of the original is currently not usable beyond startup.
+Options for real reference frames, in order of preference:
+1. the engine's own `-rendertodisk` / `-playblast` / `-fixedtimestep` (syntax via Ghidra first);
+2. a proxy `openvr_api.dll` that reads back the submitted eye textures (no GL interception);
+3. diagnose the apitrace hang with a native stack dump of both threads (needs a debugger/
+   procdump run).
