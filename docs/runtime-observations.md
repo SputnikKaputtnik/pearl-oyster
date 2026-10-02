@@ -125,3 +125,25 @@ Options for real reference frames, in order of preference:
 2. a proxy `openvr_api.dll` that reads back the submitted eye textures (no GL interception);
 3. diagnose the apitrace hang with a native stack dump of both threads (needs a debugger/
    procdump run).
+
+## run06 — built-in capture test (2026-10-03, mono, 45 s)
+
+Command: Steam line + `-mono -fixedtimestep 33.3333 -playblast <abs dir> -record <abs csv>`.
+
+* `-mono` works: desktop window shows the film (user-confirmed), no VR session.
+* **Fixed step works [F]**: `pose.csv` has 5337 rows with `time` in µs advancing by exactly
+  33 333 per frame; story time reached 177.9 s (`Main:seq4_shot10_Part2`) in 45 s wall time
+  (mono renders ≈118 fps, so the story runs ≈4× real time under a fixed step).
+* **`-record` works [F]**: CSV header `time,pos,rot,scale,marker`; `marker` = `FSM:state`.
+  In mono without head input the recorded pose is constant (pos `-3,110,45.875`, identity
+  rotation) for the whole run — **[?]** which transform is recorded (rig root vs. final camera).
+* **`-playblast` produced nothing [F]**: no TGA, and the target directory was not even created.
+  Code findings: `captureStart` runs once in `LApplication::onInitialize`; the per-graph capture
+  is configured only on the *active render graph* (`RenderManager+0x90`).
+  `setActiveRenderGraph(RenderGraph*)` re-applies capture to a new graph, but
+  `setActiveRenderGraph(String)` (by name) only swaps the pointer — Pearl switches graphs per
+  shot. Why the directory was not created is still open (absolute path vs. the engine's virtual
+  file system is the main suspect).
+* `-rendertodisk on` only sets `Platform.renderToDisk`, which gates a `renderToDisk` *story
+  command* (`Condition.renderToDiskMode`); Pearl's `states.lua` contains no such command, so the
+  switch has no effect for Pearl.
