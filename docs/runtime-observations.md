@@ -191,3 +191,22 @@ a deadlock-like stall at the very first VR frame(s). Which Moxie call leads ther
 known (no stack data); the sampler now has a heuristic stack scan (`--stack`) for the next run.
 Since a plain VR run (run02) works, one of `-fixedtimestep`, `-playblast`, `-record` (or their
 combination) triggers it.
+
+## run10 — option isolation in VR, and the SteamVR state (2026-10-03 01:37–02:0x)
+
+`tools/run_and_sample.py` (launch, sample with stack scan at 10 s, WM_CLOSE at 20 s).
+
+| Run | Options (besides Steam line) | Result |
+|---|---|---|
+| 10a | `-fixedtimestep 33.3333` | hang: 2 busy threads (GL driver D3DKMT poll / thread poll), main thread blocked in `WaitForSingleObject` under the VR frame loop (`moxie+0x18d243` in `FUN_18018d070` → compositor) |
+| 10b | `-playblast <dir>` | same hang (main thread blocked at a different place: `moxie+0x20b5cb … 0x1987bb`), no frame |
+| — | user restarted SteamVR (new vrserver PID) | |
+| 10c (control) | none (exact Steam line, as run02) | **healthy**: 53 threads, RSS 219→248 MB, CPU ≈31 %, clean exit on WM_CLOSE |
+
+Timeline: the only good VR run before (run02, 00:50) preceded the RenderDoc crash (run03,
+00:59) that killed the game **during an active VR session**; every VR run afterwards (04, 08,
+09, 10a, 10b) hung at the first frame regardless of options, while mono runs worked.
+**[I, strong]** SteamVR/compositor was left in a wedged state by that crash; runs 08–10b say
+nothing about `-playblast`/`-fixedtimestep` in VR. Practical rule: after any crash/kill of a
+VR session, restart SteamVR before the next VR measurement. Not yet tested in a clean
+environment: VR + `-playblast`/`-fixedtimestep`.
