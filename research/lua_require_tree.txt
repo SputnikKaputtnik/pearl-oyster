@@ -1,0 +1,145 @@
+pearl_vrcam/scripts/app
+  story/scripts/story
+    story/scripts/core
+      common/scripts/core
+        common/scripts/utils
+        common/scripts/events
+        common/scripts/class
+        common/scripts/math/math
+        common/scripts/math/vector2
+        common/scripts/math/vector3
+        common/scripts/math/vector4
+        common/scripts/math/quaternion
+        common/scripts/math/srt
+        common/scripts/math/easing
+        common/scripts/math/matrix4
+        common/scripts/renderdebug
+        common/scripts/customattributes
+        common/scripts/color
+        common/scripts/displaydevice
+        common/scripts/bounds
+        common/scripts/scene
+        common/scripts/particles
+        common/scripts/lights
+        common/scripts/input
+        common/scripts/sensor
+        common/scripts/replay
+        common/scripts/components/debugcameracontroller
+        common/scripts/graphics
+        common/scripts/resources
+        common/scripts/serialize
+        common/scripts/components/debugcameracontroller   (seen)
+      story/scripts/def
+      story/scripts/platform/android
+      story/scripts/factory
+        story/scripts/templates/transform
+        story/scripts/templates/camera
+        story/scripts/templates/cameraplatform
+        story/scripts/templates/light
+        story/scripts/templates/projector
+        story/scripts/templates/actor
+        story/scripts/templates/atmospherics
+        story/scripts/templates/fog
+        story/scripts/templates/particle
+        story/scripts/templates/renderview
+        story/scripts/templates/rendergraph
+        story/scripts/templates/flipbook
+        story/scripts/templates/video
+      story/scripts/timer
+      story/scripts/scheduler
+      story/scripts/eventdispatcher
+      story/scripts/eventlistener
+      story/scripts/serializer
+      story/scripts/fsm
+        story/scripts/stats
+      story/scripts/audio
+      story/scripts/textureanimationmanager
+      story/scripts/commands
+      story/scripts/conditions
+      story/scripts/interpolator
+      story/scripts/stats   (seen)
+      story/scripts/prefetchmonitor
+      story/scripts/resourcegroup
+      story/scripts/sceneplayer
+      story/scripts/checkpoints
+      story/scripts/behaviors/behavior
+      story/scripts/behaviors/behaviorcamerainitialheading
+      story/scripts/behaviors/behaviorcamerapitchremapping
+      story/scripts/behaviors/behaviorcamerasensor
+      story/scripts/behaviors/behaviorcameramouse
+      story/scripts/behaviors/behaviorcameratouch
+      story/scripts/behaviors/behaviorcamerafocallength
+      story/scripts/templates/transform   (seen)
+      story/scripts/templates/camera   (seen)
+      story/scripts/templates/cameraplatform   (seen)
+      story/scripts/templates/light   (seen)
+      story/scripts/templates/actor   (seen)
+      story/scripts/templates/fog   (seen)
+      story/scripts/templates/particle   (seen)
+      story/scripts/components/dragcontroller
+      story/scripts/components/sensorcontroller
+      story/scripts/components/lookattrigger
+      story/scripts/components/camerarigcontroller
+      story/scripts/components/cameraplatformcontroller
+      story/scripts/components/audioemitter
+      story/scripts/components/audiolistener
+      story/scripts/json
+        string   [MISSING]
+        table   [MISSING]
+      story/scripts/rpc
+        story/scripts/json   (seen)
+      story/scripts/editor
+      story/scripts/components/editorcameracontroller
+    story/scripts/json   (seen)
+  pearl_vrcam/scripts/data/package
+    pearl_vrcam/scripts/data/videos
+    pearl_vrcam/scripts/data/audio
+    pearl_vrcam/scripts/data/cameras
+    pearl_vrcam/scripts/data/lights
+    pearl_vrcam/scripts/data/triggers
+    pearl_vrcam/scripts/data/particles
+    pearl_vrcam/scripts/data/atmospherics
+    pearl_vrcam/scripts/data/cameraplatforms
+    pearl_vrcam/scripts/data/actors
+    pearl_vrcam/scripts/data/flipbooks
+    pearl_vrcam/scripts/data/states
+    pearl_vrcam/scripts/data/story
+    pearlpackage/rendergraphs/pearl30
+    pearlpackage/rendergraphs/pearl31
+    pearlpackage/rendergraphs/pearl310
+    pearlpackage/rendergraphs/pearl311
+    pearlpackage/rendergraphs/pearl312
+    pearlpackage/rendergraphs/pearl313
+    pearlpackage/rendergraphs/pearl314
+    pearlpackage/rendergraphs/pearl315
+    pearlpackage/rendergraphs/pearl316
+    pearlpackage/rendergraphs/pearl317
+    pearlpackage/rendergraphs/pearl318
+    pearlpackage/rendergraphs/pearl319
+    pearlpackage/rendergraphs/pearl32
+    pearlpackage/rendergraphs/pearl320
+    pearlpackage/rendergraphs/pearl321
+    pearlpackage/rendergraphs/pearl322
+    pearlpackage/rendergraphs/pearl323
+    pearlpackage/rendergraphs/pearl324
+    pearlpackage/rendergraphs/pearl325
+    pearlpackage/rendergraphs/pearl326
+    pearlpackage/rendergraphs/pearl327
+    pearlpackage/rendergraphs/pearl328
+    pearlpackage/rendergraphs/pearl329
+    pearlpackage/rendergraphs/pearl33
+    pearlpackage/rendergraphs/pearl330
+    pearlpackage/rendergraphs/pearl331
+    pearlpackage/rendergraphs/pearl332
+    pearlpackage/rendergraphs/pearl333
+    pearlpackage/rendergraphs/pearl334
+    pearlpackage/rendergraphs/pearl335
+    pearlpackage/rendergraphs/pearl336
+    pearlpackage/rendergraphs/pearl337
+    pearlpackage/rendergraphs/pearl338
+    pearlpackage/rendergraphs/pearl34
+    pearlpackage/rendergraphs/pearl35
+    pearlpackage/rendergraphs/pearl36
+    pearlpackage/rendergraphs/pearl37
+    pearlpackage/rendergraphs/pearl38
+    pearlpackage/rendergraphs/pearl39

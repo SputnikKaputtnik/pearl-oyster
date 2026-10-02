@@ -1,0 +1,18 @@
+# Never commit original Pearl assets or bulk extractions derived from them.
+# Bulk derived data lives outside the repo (default: C:\Tools\pearl-work\).
+*.dds
+*.mxm
+*.mxa
+*.mxb
+*.shd
+*.pfb
+*.ogg
+*.fnt
+*.mxhrtf
+*.dll
+*.exe
+work/
+extracted/
+captures/
+__pycache__/
+*.pyc

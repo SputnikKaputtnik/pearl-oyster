@@ -1,0 +1,69 @@
+## common: 109 manifest entries, 123 files on disk
+   ON-DISK-NOT-LISTED: common:shaders/override/depth_6522df69.shd
+   ON-DISK-NOT-LISTED: common:shaders/particle_5d3ea85d.shd
+   ON-DISK-NOT-LISTED: common:shaders/posteffects/blur_7bd5c66f.shd
+   ON-DISK-NOT-LISTED: common:shaders/posteffects/blur_e0708a00.shd
+   ON-DISK-NOT-LISTED: common:shaders/posteffects/downsample_6522df69.shd
+   ON-DISK-NOT-LISTED: common:shaders/posteffects/overlay_3ef87273.shd
+   ON-DISK-NOT-LISTED: common:shaders/posteffects/passthru_6522df69.shd
+   ON-DISK-NOT-LISTED: common:shaders/simple_a23a3031.shd
+   ON-DISK-NOT-LISTED: common:shaders/simple_maya_dd600dce.shd
+   ON-DISK-NOT-LISTED: common:shaders/standard_1726c7aa.shd
+   ON-DISK-NOT-LISTED: common:shaders/standard_685113bc.shd
+   ON-DISK-NOT-LISTED: common:shaders/standard_75c4006b.shd
+   ON-DISK-NOT-LISTED: common:shaders/standard_e1846f7e.shd
+   ON-DISK-NOT-LISTED: common:shaders/standard_fc117ca9.shd
+## pearl_vrcam: 3951 manifest entries, 3948 files on disk
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/pearl_ui_seated_gtr.ogg  (source pearl_vrcam:audio/pearl_ui_seated_gtr.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq01s05_1001_ambi.ogg  (source pearl_vrcam:audio/sfx_sq01s05-1001_ambi.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq01s10_1001_ambi_vive.ogg  (source pearl_vrcam:audio/sfx_sq01s10-1001_ambi-vive.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq03s10_1141_ambi_vive.ogg  (source pearl_vrcam:audio/sfx_sq03s10-1141_ambi-vive.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq04s10_1161_ambi_vive.ogg  (source pearl_vrcam:audio/sfx_sq04s10-1161_ambi-vive.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq05s90_1091_ambi_vive.ogg  (source pearl_vrcam:audio/sfx_sq05s90-1091_ambi-vive.wav)
+   LISTED-NOT-ON-DISK: pearl_vrcam:audio/sfx_sq06s30_1004_ambi_vive.ogg  (source pearl_vrcam:audio/sfx_sq06s30-1004_ambi-vive.wav)
+   ON-DISK-NOT-LISTED: pearl_vrcam:audio/dad_sq01s10_1001_mono.ogg
+   ON-DISK-NOT-LISTED: pearl_vrcam:audio/dad_sq03s10_1141_mono.ogg
+   ON-DISK-NOT-LISTED: pearl_vrcam:audio/dad_sq04s10_1161_mono.ogg
+   ON-DISK-NOT-LISTED: pearl_vrcam:scripts/data/override.lua
+## pearlpackage: 76 manifest entries, 336 files on disk
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/alwaysontop_400f969c.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/lens_flare_ec19fd3f.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/override/balloon_956d1bd5.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/override/cdepth_6522df69.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/override/invisible_6522df69.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_115366a5.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_11585548.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1349915b.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1397da46.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_14186c40.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_14e585b0.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1538666c.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_158c6ad0.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_15adaf4f.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_15cdd44d.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_15d6c9b4.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1628de0a.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_18735c5c.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1aad5b7b.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1b2cb13e.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1baf3bf.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1bc19cc1.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1c5eeec8.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1ca8dd7b.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1cfa9a0f.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_1fc34a1a.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_21f5da13.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_23b67265.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_24f899c.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_27480236.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_283d129a.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_2919d182.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_29fc8a63.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_2b4ee0c9.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_2d1a880b.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_2f3adbe.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_2f727c7f.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_309e4b16.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_3104895c.shd
+   ON-DISK-NOT-LISTED: pearlpackage:shaders/pearl2_color_3166fe24.shd
+   ON-DISK-NOT-LISTED: pe

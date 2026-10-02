@@ -1,0 +1,9 @@
+C:/source.git/gss/moxie/v2/src/engine/animation/animtypes.h
+v2/src/engine/animation/skeletal/animation.cpp
+v2/src/engine/gsa/gsaDecodeManager.cpp
+v2/src/engine/gsa/gsaDecoder.cpp
+v2/src/engine/lua/lapi/lapicore.cpp
+v2/src/engine/lua/lapplication.cpp
+v2/src/engine/lua/lenvmoxie.cpp
+v2/src/engine/lua/lutil.cpp
+v2/src/player/story/story_manager.cpp

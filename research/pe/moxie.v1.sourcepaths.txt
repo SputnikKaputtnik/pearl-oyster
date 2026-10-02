@@ -1,0 +1,5 @@
+v1/src/engine/lua/lapicore.cpp
+v1/src/engine/lua/lapplication.cpp
+v1/src/engine/lua/lenvmoxie.cpp
+v1/src/engine/lua/lutil.cpp
+v1/src/engine/scene/animation.cpp

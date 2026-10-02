@@ -1,0 +1,47 @@
+## .chk: 1 files, 10..10 bytes, total 10
+   magic 0x34333433 b'3434': 1
+## .dat: 37 files, 1840..2174 bytes, total 74535
+   magic 0x75227B7B b'{{"u': 37
+## .dds: 2241 files, 144..16777344 bytes, total 1748610896
+   magic 0x20534444 b'DDS ': 2241
+   DXT5 mips=0: 2027
+   rgb32bpp mips=0: 197
+   ETA8 mips=0: 9
+   ETC2 mips=0: 8
+   dims: 1024x1024(809), 128x128(604), 64x64(148), 256x256(122), 512x512(65), 1024x512(62), 32x32(41), 884x884(22), 96x96(21), 256x128(19), 800x800(18), 1024x256(15)
+## .fnt: 12 files, 66890..2098506 bytes, total 6897528
+   magic 0x0000000C b'\x0c\x00\x00\x00': 3
+   magic 0x0000000E b'\x0e\x00\x00\x00': 2
+   magic 0x00000018 b'\x18\x00\x00\x00': 2
+   magic 0x00000012 b'\x12\x00\x00\x00': 1
+   magic 0x00000025 b'%\x00\x00\x00': 1
+   magic 0x00000008 b'\x08\x00\x00\x00': 1
+   magic 0x0000002C b',\x00\x00\x00': 1
+   magic 0x00000009 b'\t\x00\x00\x00': 1
+## .mxa: 953 files, 274..4998158 bytes, total 235309531
+   magic 0x0D00D135 b'5\xd1\x00\r': 953
+   type=0x42A975E4 u16@8=2: 782
+   type=0x42A975E4 u16@8=1: 171
+## .mxb: 10 files, 4797..190397 bytes, total 551364
+   magic 0x0D00D135 b'5\xd1\x00\r': 10
+   type=0x88F89426 u16@8=2: 10
+## .mxhrtf: 1 files, 4168..4168 bytes, total 4168
+   magic 0x46545248 b'HRTF': 1
+## .mxm: 742 files, 28..1458483 bytes, total 94734248
+   magic 0x0D00D135 b'5\xd1\x00\r': 742
+   type=0xB6181A32 u16@8=46: 742
+## .ogg: 19 files, 75097..4383039 bytes, total 19934676
+   magic 0x5367674F b'OggS': 19
+   codec=b'vorbis' ch=4 rate=48000: 8
+   codec=b'vorbis' ch=1 rate=48000: 6
+   codec=b'vorbis' ch=2 rate=48000: 5
+## .pfb: 8 files, 289..2544 bytes, total 9232
+   magic 0x00000201 b'\x01\x02\x00\x00': 3
+   magic 0x00000206 b'\x06\x02\x00\x00': 2
+   magic 0x00000204 b'\x04\x02\x00\x00': 1
+   magic 0x00000205 b'\x05\x02\x00\x00': 1
+   magic 0x6574616D b'mate': 1
+## .shd: 303 files, 491..6587 bytes, total 1220913
+   magic 0x00010001 b'\x01\x00\x01\x00': 303
+## .tga: 37 files, 172818..172818 bytes, total 6394266
+   magic 0x00020000 b'\x00\x00\x02\x00': 37

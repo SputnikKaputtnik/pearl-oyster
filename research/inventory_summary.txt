@@ -1,0 +1,41 @@
+engine-common                    bitmap-font                                8        5.8 MB
+engine-common                    hrtf-filters                               1        0.0 MB
+engine-common                    lua-script                                56        0.2 MB
+engine-common                    material/post-effect (.pfb)                2        0.0 MB
+engine-common                    model (Moxie .mxm)                         2        0.0 MB
+engine-common                    shader (GLSL ES permutation)              43        0.1 MB
+engine-common                    texture (DDS)                             11       27.3 MB
+engine-common/build-metadata     build-manifest                             1        0.0 MB
+install-root                     text                                       2        0.1 MB
+pearl-content                    animation (Moxie .mxa)                   952      235.3 MB
+pearl-content                    audio (Ogg Vorbis)                        19       19.9 MB
+pearl-content                    bitmap-font                                4        1.1 MB
+pearl-content                    lua-data (Spotlight Tools export)         14        0.6 MB
+pearl-content                    lua-script                                 1        0.0 MB
+pearl-content                    macos-junk                                 1        0.0 MB
+pearl-content                    model (Moxie .mxm)                       739       94.7 MB
+pearl-content                    texture (DDS)                           2219     1718.7 MB
+pearl-content/build-metadata     build-lockfile                             1        0.0 MB
+pearl-content/build-metadata     build-manifest                             1        1.3 MB
+pearl-content/build-metadata     text                                       1        0.0 MB
+pearl-shared                     lua-data (particle material)              10        0.0 MB
+pearl-shared                     lua-data (render graph)                   39        0.5 MB
+pearl-shared                     material/post-effect (.pfb)                6        0.0 MB
+pearl-shared                     particle-system (Moxie .mxb)              10        0.6 MB
+pearl-shared                     shader (GLSL ES permutation)             260        1.1 MB
+pearl-shared                     texture (DDS)                             11        2.6 MB
+pearl-shared/build-metadata      build-manifest                             1        0.0 MB
+runtime-moxie                    dll                                        4       10.4 MB
+runtime-moxie                    executable                                 2        0.2 MB
+runtime-thirdparty               dll                                       24       24.6 MB
+steam-redist                     executable                                 6       57.2 MB
+steam-redist                     steam-installscript                        5        0.0 MB
+story-framework                  animation (Moxie .mxa)                     1        0.0 MB
+story-framework                  lua-script                                58        0.3 MB
+story-framework                  model (Moxie .mxm)                         1        0.0 MB
+story-framework/build-metadata   build-manifest                             1        0.0 MB
+user-state                       persist-checksum                           1        0.0 MB
+user-state                       persist-table                              1        0.0 MB
+user-state                       runtime-log/temp                           6        0.0 MB
+user-state                       save-state                                37        0.1 MB
+user-state                       save-thumbnail                            37        6.4 MB
