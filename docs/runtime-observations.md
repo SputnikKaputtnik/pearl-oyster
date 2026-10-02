@@ -157,3 +157,18 @@ Command: Steam line + `-mono -fixedtimestep 33.3333 -playblast <abs dir> -record
 * **run07b**: relative path `capturesun07b` → nothing written, no directory created.
 * Conclusion: the run06 failure was only the missing directory; the render-graph hypothesis was
   wrong. Rule: pre-create the target directory and pass an absolute path.
+
+## run08 — built-in capture in VR mode (2026-10-03 01:31, 20 s)
+
+Command: Steam line (SteamVR running) + `-fixedtimestep 33.3333 -playblast <pre-created abs dir>
+-record <abs csv>`. VR session established (`vrclient_x64.dll` loaded).
+
+* Exactly **two files** written: `screenshot_eye0_00000.tga` and `screenshot_eye1_00001.tga`
+  (2612×2852, 24-bit, both **completely black** = first preload frame). Note the frame counter
+  increments per eye, not per frame **[F]**.
+* Immediately afterwards the process **spins**: from t = 2.3 s CPU ≈ 200 % (two busy threads),
+  RSS frozen at 137 MB, no further frames, `pose.csv` header only, `WM_CLOSE` ignored →
+  terminated. (Normal VR run02: RSS grows to 340 MB while loading, CPU settles at 25–40 %.)
+* The same capture options work in mono (run07a). Which option triggers the VR spin
+  (`-playblast`, `-fixedtimestep`, `-record`, or their combination with the compositor's frame
+  pacing) is not isolated yet.
