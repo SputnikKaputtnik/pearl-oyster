@@ -172,3 +172,22 @@ Command: Steam line (SteamVR running) + `-fixedtimestep 33.3333 -playblast <pre-
 * The same capture options work in mono (run07a). Which option triggers the VR spin
   (`-playblast`, `-fixedtimestep`, `-record`, or their combination with the compositor's frame
   pacing) is not isolated yet.
+
+## run09 — reproduction of run08 with thread sampling (2026-10-03)
+
+Same command as run08. This time **no frame at all** was written; the hang came even earlier
+(22 threads, RSS 157 MB — the loader threads never started; normal VR run: ~50 threads, 340 MB).
+`tools/thread_sampler.py` at 8 s and 15.8 s (100 samples each), offsets resolved against this
+machine's system DLLs:
+
+| Thread | CPU in 15 s | Where (RIP) |
+|---|---|---|
+| A | 7.6 s (≈100 %) | `win32u!NtGdiDdDDIEscape` (65 %) / `NtGdiDdDDIGetDeviceState` (30 %), occasionally `nvoglv64.dll` — the NVIDIA OpenGL driver polling the kernel graphics stack |
+| B | 7.6 s (≈100 %) | `ntdll!ZwQueryInformationThread` (87 %) / `ZwDelayExecution` — a `Sleep(0)`-style poll of another thread's state |
+
+No TDR / display-driver event and no crash in the event logs. **[I]** The render thread is
+busy-waiting inside the GL driver (fence/present/interop wait) while a second thread polls it —
+a deadlock-like stall at the very first VR frame(s). Which Moxie call leads there is not yet
+known (no stack data); the sampler now has a heuristic stack scan (`--stack`) for the next run.
+Since a plain VR run (run02) works, one of `-fixedtimestep`, `-playblast`, `-record` (or their
+combination) triggers it.
