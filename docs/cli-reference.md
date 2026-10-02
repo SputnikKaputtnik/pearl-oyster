@@ -62,7 +62,11 @@ means off. Optional numeric values are only consumed if the next token does not 
 
 ## Capture output **[F]**
 
-`RenderManager::captureStart(dir)` creates `dir` if needed and writes **TGA** files:
+`RenderManager::captureStart(dir)` writes **TGA** files (24-bit, uncompressed, 2 764 818 bytes at
+1280×720). **The directory must already exist and be given as an absolute path** — verified in
+run06/run07: the engine never creates it (the create branch in the code is not effective), a
+relative path produced nothing. Capture survives render-graph switches (frames continue across
+all shots).
 * stereo/VR: `dir/screenshot_eye<E>_<NNNNN>.tga` (one file per eye per frame)
 * mono: `dir/screenshot_<NNNNN>.tga`
 * a pattern with `#` (Lua `renderToDisk`, default `screencapture[####].tga`) becomes
@@ -75,7 +79,10 @@ means off. Optional numeric values are only consumed if the next token does not 
 A recording therefore is a human-readable per-frame camera pose log — directly usable as
 reference input for a new runtime.
 
-## Suggested reference-capture invocations (to be validated in an announced run)
+## Reference-capture invocations
+
+Verified (run07a): `-mono -fixedtimestep 33.3333 -playblast <existing absolute dir>` → 2374
+frames in 20 s wall time covering intro → seq2 (story ≈79 s at 30 fps steps).
 
 ```
 win64\storyplayer.exe -package pearl_vrcam -NOfullscreen -res 1280 720 -msaa 2 -ssaa 1.0 -mono -fixedtimestep 33.3333 -playblast <dir>

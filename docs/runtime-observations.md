@@ -147,3 +147,13 @@ Command: Steam line + `-mono -fixedtimestep 33.3333 -playblast <abs dir> -record
 * `-rendertodisk on` only sets `Platform.renderToDisk`, which gates a `renderToDisk` *story
   command* (`Condition.renderToDiskMode`); Pearl's `states.lua` contains no such command, so the
   switch has no effect for Pearl.
+
+## run07 — capture path rule (2026-10-03, mono, 2 × 20 s)
+
+* **run07a**: `-playblast C:\…un07arames` with the directory **created beforehand** →
+  **2374 TGA frames** (1280×720, 24-bit), continuous across shot/render-graph changes
+  (contact sheet: seated-hint card, PEARL title, car interior seq1/seq2 with changing light).
+  26 frames identical to their predecessor (black/static intro frames).
+* **run07b**: relative path `capturesun07b` → nothing written, no directory created.
+* Conclusion: the run06 failure was only the missing directory; the render-graph hypothesis was
+  wrong. Rule: pre-create the target directory and pass an absolute path.
