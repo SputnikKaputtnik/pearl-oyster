@@ -78,8 +78,10 @@ Run it with a scratch directory as working directory: the story tries to write c
   `f` corresponds to reference `screenshot_{f+9}`.
 * Mean absolute difference per frame (0..255), every 50th frame of all 2366 reference frames
   (start → seq1_shot60): mean 3.82, on 4x downsampled images 1.54 (film grain averages out).
-  Title sequence 0.00-0.05; most shots 3.6-4.5 (grain floor); seq1_shot20 ~7 (2.7 downsampled:
-  rim highlights slightly weaker, open).
+  Title sequence 0.00-0.05; most shots 3.6-4.5 (grain floor); seq1_shot20 ~7: also grain - the
+  difference falls like noise with blur (7.1 / 2.7 / 0.81 / 0.40 at 1x / 4x / 16x / 32x) and the
+  high-frequency energy is the same as the original's (5.64 vs 5.74), the shot just has stronger
+  grain whose per-frame phase differs.
 * All 31 state transitions recorded by the original (run06 markers, up to seq4_shot10_Part2)
   match frame-exactly; the whole film runs to EndingCreditTemp (~6 min story time, ~1 min
   compute headless).
@@ -89,5 +91,5 @@ Run it with a scratch directory as working directory: the story tries to write c
 
 ## Open
 
-* Flipbooks, video cubes (audio: see audio.md, particles: see particles.md).
+* Flipbooks and video cubes: not used by Pearl (`def.flipbooks` and `def.videos` are empty), so not implemented. Audio: audio.md, particles: particles.md, VR: vr.md.
 * Remaster profile options (interpolation, resolution, ASW, grain toggle) on top of the player.
