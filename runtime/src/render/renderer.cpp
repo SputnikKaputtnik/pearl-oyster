@@ -199,13 +199,16 @@ GLuint Renderer::texture(const std::string& uri) {
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        // DXT5 without S3TC support (Quest/Adreno), or forced for testing: lossless CPU decode
+        // DXT5 without S3TC support (Quest/Adreno), or forced for testing: lossless CPU decode.
+        // Normally the installer step (apps/prepare, oyster_prepare) has converted the textures
+        // beforehand with the same code; decoding here is only the fallback for raw data.
         static const char* forceDecode = std::getenv("OYSTER_DECODE_DXT");
         static const bool hasS3tc = [] {
             const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
             return ext && (std::strstr(ext, "GL_EXT_texture_compression_s3tc") || std::strstr(ext, "GL_EXT_texture_compression_dxt1"));
         }();
         if (d.format == TexFormat::DXT5 && (!hasS3tc || forceDecode)) {
+            if (!forceDecode) warnOnce("DXT5 textures are decoded at load time - prepare the data with oyster_prepare");
             std::vector<uint8_t> rgba(static_cast<size_t>(d.width) * d.height * 4);
             decodeDXT5(d.level0.data(), d.width, d.height, rgba.data(), (forceDecode && *forceDecode) ? std::atoi(forceDecode) : 4);
             d.level0.swap(rgba);

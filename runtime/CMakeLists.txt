@@ -61,6 +61,12 @@ if(NOT ANDROID)
   add_executable(oyster_lua apps/lua/main.cpp)
   target_link_libraries(oyster_lua PRIVATE luajit)
 
+  add_executable(oyster_prepare apps/prepare/main.cpp)
+  target_link_libraries(oyster_prepare PRIVATE oyster_core)
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    target_link_options(oyster_prepare PRIVATE -static)
+  endif()
+
   add_executable(oyster_check apps/check/main.cpp)
   target_link_libraries(oyster_check PRIVATE oyster_core)
 

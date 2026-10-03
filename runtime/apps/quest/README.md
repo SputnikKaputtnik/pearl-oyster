@@ -21,14 +21,21 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Data (the user's own installation)
 
-The APK contains no Pearl assets. Copy the four content folders of your installation
-(`common`, `pearl_vrcam`, `pearlpackage`, `story`, about 2 GB) into the app's external files
-directory:
+The APK contains no Pearl assets. An offline installer step prepares your installation for
+the headset: `oyster_prepare` (desktop build of the runtime, `apps/prepare`) copies the four
+content folders (`common`, `pearl_vrcam`, `pearlpackage`, `story`) and converts every DXT5
+texture - which the Quest GPU cannot sample - into an uncompressed RGBA8 DDS of the same name,
+using the runtime's decoder (pixel-identical to the desktop GPU). The source is only read.
+Result: about 4.6 GB, about 6 s on a desktop.
 
 ```powershell
+oyster_prepare --root "<Pearl installation>" --out "<folder>"
 adb shell mkdir -p /sdcard/Android/data/org.oyster.pearl/files/pearl
-adb push "<install>\common" "<install>\pearl_vrcam" "<install>\pearlpackage" "<install>\story" /sdcard/Android/data/org.oyster.pearl/files/pearl/
+adb push "<folder>/." /sdcard/Android/data/org.oyster.pearl/files/pearl/
 ```
+
+Unprepared data still works (textures are then decoded while loading, with a warning in the
+log), but costs CPU time during the story.
 
 Checkpoint saves are written to `/sdcard/Android/data/org.oyster.pearl/files/saves/`.
 
@@ -49,6 +56,6 @@ height); the tracking origin is the floor (LOCAL_FLOOR).
   IPD is the distance of the two eye positions.
 * The eye images are copied 1:1 into sRGB swapchains with sRGB write encoding disabled, so the
   compositor receives the same display-referred values the original submitted to SteamVR.
-* DXT5 textures are decoded on the CPU (the Quest GPU has no S3TC) with the desktop GPU's
+* DXT5 textures arrive pre-converted to RGBA8 (oyster_prepare); the decoder reproduces the desktop GPU
   arithmetic; decoded textures are kept within a 1 GB budget (least recently used are freed).
 * Story time advances only while the app has focus; audio (AAudio, 48 kHz) pauses with it.
