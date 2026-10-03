@@ -3,6 +3,7 @@
 // Platform services the desktop player does not have (Android, analytics, RPC, sensors) answer
 // like the original desktop build without such devices.
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #include "story/bind_util.h"
@@ -205,6 +206,23 @@ int g_inspect(lua_State* L) {
 }
 int noop(lua_State* L) { return 0; }
 
+// ---- FileSystem (Story:save creates "saves/" next to the working directory) ------------------
+// Only relative paths without ".." are created, so a run can never write outside its working
+// directory (the player is run from a work folder, never from the installation).
+int FS_mkdir(lua_State* L) {
+    std::string path = optString(L, firstArg(L));
+    std::filesystem::path fp(path);
+    bool safe = !path.empty() && fp.is_relative() && !fp.has_root_name();
+    for (const auto& part : fp) safe = safe && part != "..";
+    std::error_code ec;
+    lua_pushboolean(L, safe && (std::filesystem::create_directories(fp, ec) || std::filesystem::is_directory(fp, ec)));
+    return 1;
+}
+int FS_getFilesInDirectory(lua_State* L) {
+    lua_newtable(L);
+    return 1;
+}
+
 }  // namespace
 
 void bindCore(Engine& e) {
@@ -273,6 +291,9 @@ void bindCore(Engine& e) {
         {"setSensorFusionLowpassFilterEnabled", DD_noop}, {"setSensorFusionLowpassFilterEnable", DD_noop},
         {"setSensorFusionLowpassFilterCurve", DD_noop}, {"pause", DD_noop}, {"resume", DD_noop}, {nullptr, nullptr}};
     h.bindType("Sensor", sensor);
+
+    static const luaL_Reg fs[] = {{"mkdir", FS_mkdir}, {"getFilesInDirectory", FS_getFilesInDirectory}, {nullptr, nullptr}};
+    h.bindType("FileSystem", fs);
 
     static const luaL_Reg stat[] = {{"create", Stat_create}, {"destroy", Stat_noop}, {"set", Stat_noop},
                                     {"get", Stat_noop}, {"find", Stat_noop}, {nullptr, nullptr}};

@@ -13,6 +13,7 @@
 #include "core/pkgfs.h"
 #include "render/gl.h"
 #include "scene/model_instance.h"
+#include "scene/particles.h"
 
 namespace oyster {
 
@@ -51,6 +52,8 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples = 1);
 struct SceneItem {
     const ModelInstance* inst = nullptr;
     uint32_t viewFlags = 0xFFFFFFFF;
+    const ParticleEmitter* particles = nullptr;  // particle emitter instead of a model
+    Mat4 particleWorld;                          // emitter world (local-space systems only)
 };
 
 class Renderer {
@@ -88,6 +91,7 @@ private:
     };
     struct DrawItem {
         const ModelInstance* inst = nullptr;
+        const SceneItem* particles = nullptr;
         size_t mesh = 0, sub = 0, pass = 0;
         uint64_t key = 0;
         uint32_t seq = 0;
@@ -95,6 +99,7 @@ private:
     void lightBlock(const ViewParams& vp, LightBlock& lb) const;
     static uint64_t sortKey(const MaterialPass& pass, float depth);
     void executeDraw(const DrawItem& d, const ViewParams& vp, const LightBlock& lb);
+    void drawParticles(const SceneItem& it, const ViewParams& vp);
     struct GpuMesh {
         GLuint vao = 0, ibo = 0;
         GLuint vbo[10] = {};  // per attribute slot
@@ -109,6 +114,9 @@ private:
 
     const PackageFS& fs_;
     std::unordered_map<std::string, GLuint> textures_;
+    std::unordered_map<std::string, std::pair<int, int>> textureSizes_;
+    GLuint particleVao_ = 0, particleVbo_ = 0, particleIbo_ = 0;
+    std::vector<float> particleVerts_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;
     std::map<std::pair<uint64_t, size_t>, GpuMesh> meshes_;  // (ModelInstance::id, mesh)
     std::map<std::string, bool> warned_;

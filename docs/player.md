@@ -89,5 +89,5 @@ Run it with a scratch directory as working directory: the story tries to write c
 
 ## Open
 
-* Particles (`.mxb`), flipbooks, video cubes (audio: see audio.md).
+* Flipbooks, video cubes (audio: see audio.md, particles: see particles.md).
 * Remaster profile options (interpolation, resolution, ASW, grain toggle) on top of the player.

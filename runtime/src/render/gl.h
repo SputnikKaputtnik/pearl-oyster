@@ -61,6 +61,7 @@ typedef std::ptrdiff_t GLintptr;
 #define GL_ELEMENT_ARRAY_BUFFER 0x8893
 #define GL_STATIC_DRAW 0x88E4
 #define GL_DYNAMIC_DRAW 0x88E8
+#define GL_STREAM_DRAW 0x88E0
 #define GL_FRAGMENT_SHADER 0x8B30
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_COMPILE_STATUS 0x8B81
@@ -144,6 +145,7 @@ typedef std::ptrdiff_t GLintptr;
     X(void, glUseProgram, (GLuint))                                                                \
     X(void, glDeleteProgram, (GLuint))                                                             \
     X(GLint, glGetUniformLocation, (GLuint, const GLchar*))                                        \
+    X(GLint, glGetAttribLocation, (GLuint, const GLchar*))                                        \
     X(void, glUniform1i, (GLint, GLint))                                                           \
     X(void, glUniform1iv, (GLint, GLsizei, const GLint*))                                          \
     X(void, glUniform1fv, (GLint, GLsizei, const GLfloat*))                                        \

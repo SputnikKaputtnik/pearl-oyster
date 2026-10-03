@@ -18,6 +18,7 @@
 #include "core/pkgfs.h"
 #include "scene/animation.h"
 #include "scene/model_instance.h"
+#include "scene/particles.h"
 #include "story/lua_host.h"
 
 namespace oyster {
@@ -76,6 +77,11 @@ struct ActorNode : SGNode {
     AnimationObj* bound = nullptr;  // clip currently bound to the ModelInstance
     float boneRadius = 0;
     bool drawable = true;           // false for render graph instances
+};
+
+// SGParticleEmitter: particle system resource + simulation state (scene/particles.h)
+struct ParticleNode : SGNode {
+    std::unique_ptr<ParticleEmitter> emitter;
 };
 
 struct CameraNode : SGNode {
@@ -205,6 +211,7 @@ public:
     std::shared_ptr<ModelResource> model(const std::string& uri);
     std::shared_ptr<AnimResource> anim(const std::string& uri);
     std::unique_ptr<ModelInstance> instantiate(const std::string& uri);
+    std::shared_ptr<const ParticleSystemResource> particleSystem(const std::string& uri);
 
     std::vector<SceneObj*> scenes;
     std::vector<RenderGraphObj*> graphs;
@@ -227,6 +234,7 @@ private:
     std::unique_ptr<Renderer> renderer_;
     std::unique_ptr<audio::Engine> audio_;
     std::map<std::string, std::shared_ptr<const audio::PcmClip>> clips_;
+    std::map<std::string, std::shared_ptr<const ParticleSystemResource>> particleSystems_;
     bool hrtfLoaded_ = false;
     TimeState time_;
     InputState input_;

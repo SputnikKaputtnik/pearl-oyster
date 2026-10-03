@@ -270,6 +270,19 @@ std::shared_ptr<AnimResource> Engine::anim(const std::string& uri) {
     return a;
 }
 
+std::shared_ptr<const ParticleSystemResource> Engine::particleSystem(const std::string& uri) {
+    auto it = particleSystems_.find(uri);
+    if (it != particleSystems_.end()) return it->second;
+    std::shared_ptr<const ParticleSystemResource> ps;
+    try {
+        ps = loadParticleSystem(fs_.read(uri));
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "particle system %s: %s\n", uri.c_str(), ex.what());
+    }
+    particleSystems_[uri] = ps;
+    return ps;
+}
+
 std::unique_ptr<ModelInstance> Engine::instantiate(const std::string& uri) {
     std::shared_ptr<ModelResource> m = model(uri);
     std::shared_ptr<ModelResource> geom = m;
@@ -422,6 +435,19 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
             updateActor(static_cast<ActorNode*>(n), dt);
             if (static_cast<ActorNode*>(n)->inst) applyAttachedLights(static_cast<ActorNode*>(n));
         }
+    // SGParticleEmitter::internalUpdate: global dt (us) x 1e-6 x the emitter's time scale, after
+    // the actors have posed the bones the emitters hang on
+    for (SGNode* n : nodes) {
+        if (!n->alive || n->kind != SGNode::Kind::Particles) continue;
+        auto* p = static_cast<ParticleNode*>(n);
+        if (!p->emitter) continue;
+        bool active = true;
+        for (const SGNode* q = n; q; q = q->parent) active = active && q->active;
+        if (!active) continue;
+        SRT w = n->worldSRT();
+        float pdt = static_cast<float>(time_.dtUs) * 1e-06f * p->emitter->timeScale;
+        p->emitter->update(pdt, w.p, w.r, w.matrix());
+    }
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onLateUpdate");
     // deferred deletes
@@ -496,6 +522,28 @@ void Engine::draw() {
         for (SGNode* n : s->nodes) {
             if (n->kind == SGNode::Kind::RenderGraphInstance && n->alive && n->name == activeGraph_->name)
                 graphAnim = static_cast<ActorNode*>(n)->inst.get();
+            static const bool debugParticles = std::getenv("OYSTER_DEBUG_PARTICLES") != nullptr;
+            if (debugParticles && n->kind == SGNode::Kind::Particles && n->alive) {
+                auto* p = static_cast<ParticleNode*>(n);
+                Vec3 lo = p->emitter ? p->emitter->boundsMin() : Vec3(), hi = p->emitter ? p->emitter->boundsMax() : Vec3();
+                Vec3 w = p->worldSRT().p;
+                std::fprintf(stderr, "frame %llu emitter %s vis %d flags %x n %zu at %.1f %.1f %.1f bounds %.1f %.1f %.1f .. %.1f %.1f %.1f\n",
+                             static_cast<unsigned long long>(frameIndex), n->name.c_str(), static_cast<int>(n->effectiveVisible()),
+                             n->viewFlags, p->emitter ? p->emitter->particles().size() : 0, w.x, w.y, w.z, lo.x, lo.y,
+                             lo.z, hi.x, hi.y, hi.z);
+            }
+            if (n->kind == SGNode::Kind::Particles && n->effectiveVisible()) {
+                auto* p = static_cast<ParticleNode*>(n);
+                static const bool hideParticles = std::getenv("OYSTER_DEBUG_NOPARTICLES") != nullptr;
+                if (p->emitter && !hideParticles) {
+                    SceneItem it;
+                    it.particles = p->emitter.get();
+                    it.viewFlags = p->viewFlags;
+                    it.particleWorld = p->worldMatrix();
+                    items.push_back(it);
+                }
+                continue;
+            }
             if (n->kind != SGNode::Kind::Actor || !n->effectiveVisible()) continue;
             auto* a = static_cast<ActorNode*>(n);
             if (a->drawable && a->inst) items.push_back({a->inst.get(), a->viewFlags});

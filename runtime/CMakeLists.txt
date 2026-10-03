@@ -25,8 +25,10 @@ add_library(oyster_core STATIC
   src/assets/anim.cpp
   src/assets/shader_file.cpp
   src/assets/dds.cpp
+  src/assets/particles.cpp
   src/scene/animation.cpp
   src/scene/model_instance.cpp
+  src/scene/particles.cpp
 )
 target_include_directories(oyster_core PUBLIC src)
 

@@ -121,6 +121,11 @@ Renderer::~Renderer() {
     for (auto& kv : meshes_) freeMesh(kv.second);
     glDeleteTextures(1, &white_);
     if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); glDeleteBuffers(1, &quadVbo_); }
+    if (particleVao_) {
+        glDeleteVertexArrays(1, &particleVao_);
+        glDeleteBuffers(1, &particleVbo_);
+        glDeleteBuffers(1, &particleIbo_);
+    }
 }
 
 void Renderer::freeMesh(GpuMesh& g) {
@@ -153,6 +158,7 @@ GLuint Renderer::texture(const std::string& uri) {
     GLuint t = 0;
     try {
         TextureData d = loadDDS(fs_.read(uri));
+        textureSizes_[uri] = {static_cast<int>(d.width), static_cast<int>(d.height)};
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -406,6 +412,32 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
     uint32_t seq = 0;
     for (const SceneItem& it : items) {
         if (!(it.viewFlags & vp.viewFlag)) continue;
+        if (it.particles) {
+            // SGParticleEmitter::internalRender: depth = (view-z of the particle bounds' centre
+            // minus their largest half extent) / far; nothing is drawn for empty or flat bounds
+            const ParticleEmitter& em = *it.particles;
+            const Material& pmat = em.resource().material;
+            if (em.particles().empty() || !em.boundsValid() || pmat.passes.empty()) continue;
+            Vec3 c = (em.boundsMin() + em.boundsMax()) * 0.5f;
+            Vec3 e = (em.boundsMax() - em.boundsMin()) * 0.5f;
+            float ext = e.x;
+            if (ext <= e.y) ext = e.y;
+            if (ext <= e.z) ext = e.z;
+            if (ext == 0.0f) continue;
+            const float* m = vp.view.m;
+            float z = (c.y * m[9] + c.x * m[8] + c.z * m[10] + m[11]) - ext;
+            float pdepth = 0.0f;
+            if (0.0f < z) {
+                pdepth = z / vp.zfar;
+                if (1.0f <= pdepth) pdepth = 1.0f;
+            }
+            DrawItem d;
+            d.particles = &it;
+            d.key = sortKey(pmat.passes[0], pdepth);
+            d.seq = seq++;
+            draws.push_back(d);
+            continue;
+        }
         const ModelInstance& inst = *it.inst;
         const ModelResource& model = inst.model();
         const std::vector<Material>& mats = inst.materials();
@@ -470,6 +502,10 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
 }
 
 void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightBlock& lb) {
+    if (d.particles) {
+        drawParticles(*d.particles, vp);
+        return;
+    }
     const ModelInstance& inst = *d.inst;
     const ModelResource& model = inst.model();
     const std::vector<Material>& mats = inst.materials();
@@ -608,6 +644,200 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
         }
         glBindVertexArray(0);
     }
+}
+
+// ParticleBuffer::draw: four vertices per particle in the original layout (0x30 bytes):
+// a_pos (xyz, w = corner code 0.1/1.1/1.0/0.0), a_size (half size +-x/+-y, rotation, size life),
+// a_col (RGBA8), a_frame (frame, next frame, blend*255), a_colorLife, a_rotLife; quads 0,1,2 0,2,3.
+void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
+    const ParticleEmitter& em = *it.particles;
+    const ParticleSystemResource& d = em.resource();
+    const MaterialPass& pass = d.material.passes[0];
+    Program* prog = program(pass.shader.uri);
+    if (!prog || !prog->ok) return;
+    constexpr uint32_t kCapacity = 0x4000;  // ParticleBuffer size limit
+    if (!particleVao_) {
+        glGenVertexArrays(1, &particleVao_);
+        glGenBuffers(1, &particleVbo_);
+        glGenBuffers(1, &particleIbo_);
+        std::vector<uint16_t> idx;
+        idx.reserve(kCapacity * 6);
+        for (uint32_t q = 0; q < kCapacity; ++q) {
+            uint16_t b = static_cast<uint16_t>(q * 4);
+            for (uint16_t o : {0, 1, 2, 0, 2, 3}) idx.push_back(static_cast<uint16_t>(b + o));
+        }
+        glBindVertexArray(particleVao_);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, particleIbo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(idx.size() * 2), idx.data(), GL_STATIC_DRAW);
+        glBindVertexArray(0);
+    }
+
+    // life parameter (mode 0: age / lifetime, capped at 0.999, with optional fade-in/out ramps)
+    auto lifeParam = [&](const Particle& p, size_t block, size_t fade) {
+        if (d.u(block) != 0) warnOnce("particle life mode " + std::to_string(d.u(block)) + " not implemented");
+        float t = p.age / p.life;
+        if (0.999f <= t) t = 0.999f;
+        float r = t;
+        uint8_t fadeIn = d.b(fade);
+        float fadeInT = d.f(fade + 4);
+        uint8_t fadeOut = d.b(fade + 8);
+        float fadeOutT = d.f(fade + 12);
+        if (fadeIn == 0 || fadeInT <= p.age) {
+            if (fadeOut != 0 && p.life - p.age < fadeOutT) {
+                r = ((p.age - (p.life - fadeOutT)) / fadeOutT) * 0.33333334f + 0.6666667f;
+                if (r <= t) r = t;
+            }
+        } else {
+            r = (p.age / fadeInT) * 0.33333334f;
+            if (t <= r) r = t;
+        }
+        return r;
+    };
+    if (d.b(0x13c) != 0) warnOnce("particle vertex variant 0x13c not implemented");
+    const std::vector<Particle>& ps = em.particles();
+    uint32_t numFrames = d.u(0x1d8);
+    particleVerts_.resize(ps.size() * 48);
+    float* out = particleVerts_.data();
+    for (const Particle& p : ps) {
+        float sizeLife = lifeParam(p, 0xc8, 0xe8);
+        float colorLife = lifeParam(p, 0x74, 0x94);
+        float rotLife = lifeParam(p, 0x10c, 0x12c);
+        float hw = p.size[0] * 0.5f, hh = p.size[1] * 0.5f;
+        uint8_t fb[4] = {0, 0, 0, 0};
+        if (numFrames != 0) {
+            int fi = static_cast<int>(std::floor(p.frame));
+            fb[0] = static_cast<uint8_t>(fi);
+            fb[1] = static_cast<uint8_t>((static_cast<uint32_t>(fi) + 1u) % numFrames);
+            fb[2] = static_cast<uint8_t>(static_cast<int>((p.frame - static_cast<float>(fi)) * 255.0f));
+        }
+        float colBits, frameBits;
+        std::memcpy(&colBits, p.col, 4);
+        std::memcpy(&frameBits, fb, 4);
+        const float corner[4] = {0.1f, 1.1f, 1.0f, 0.0f};
+        const float sx[4] = {-hw, hw, hw, -hw}, sy[4] = {-hh, -hh, hh, hh};
+        for (int v = 0; v < 4; ++v) {
+            float* o = out + v * 12;
+            o[0] = p.pos[0];
+            o[1] = p.pos[1];
+            o[2] = p.pos[2];
+            o[3] = corner[v];
+            o[4] = sx[v];
+            o[5] = sy[v];
+            o[6] = p.rot;
+            o[7] = sizeLife;
+            o[8] = colBits;
+            o[9] = frameBits;
+            o[10] = colorLife;
+            o[11] = rotLife;
+        }
+        out += 48;
+    }
+
+    glUseProgram(prog->id);
+    applyRenderState(pass.state);
+    // material parameters; the diffuse texture also defines the flipbook geometry
+    static const uint32_t kDiffuse = fnv1a("DiffuseMap");
+    std::pair<int, int> texSize{1, 1};
+    const auto& un = prog->meta.uniforms;
+    for (const MaterialParam& mp : pass.params) {
+        if (mp.uniformIndex >= un.size()) continue;
+        GLint loc = prog->loc[mp.uniformIndex];
+        if (mp.type != 0) {
+            GLuint t = texture(mp.texture.uri);
+            if (mp.nameHash == kDiffuse) {
+                auto sz = textureSizes_.find(mp.texture.uri);
+                if (sz != textureSizes_.end()) texSize = sz->second;
+            }
+            if (loc < 0) continue;
+            int unit = un[mp.uniformIndex].unit >= 0 ? un[mp.uniformIndex].unit : 0;
+            glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+            glBindTexture(GL_TEXTURE_2D, t);
+            glUniform1i(loc, unit);
+        } else if (loc >= 0 && !mp.values.empty()) {
+            float v[4] = {0, 0, 0, 0};
+            for (size_t i = 0; i < mp.values.size() && i < 4; ++i) v[i] = mp.values[i];
+            glUniform4fv(loc, 1, v);
+        }
+    }
+    float texW = static_cast<float>(texSize.first), texH = static_cast<float>(texSize.second);
+    float frameW = static_cast<float>(d.u(0x1d0)), frameH = static_cast<float>(d.u(0x1d4));
+    if (frameW <= 0.0f || frameH <= 0.0f) {
+        frameW = texW;
+        frameH = texH;
+    }
+    float numF = static_cast<float>(numFrames);
+    float texSz[2] = {texW, texH}, frameSz[2] = {frameW, frameH};
+    float stride = std::floor((1.0f / frameW) * texW);
+    float ratio[2] = {frameW / texW, frameH / texH};
+    float scale[2] = {1.0f - 1.0f / frameW, 1.0f - 1.0f / frameH};
+    float sizeX[4] = {d.f(0xa8), d.f(0xb0), d.f(0xb8), d.f(0xc0)};
+    float sizeY[4] = {d.f(0xac), d.f(0xb4), d.f(0xbc), d.f(0xc4)};
+    float rotation[4] = {d.f(0xfc), d.f(0x100), d.f(0x104), d.f(0x108)};
+    float colors[16];  // column = channel over the four colour keys at +0x34
+    for (size_t ch = 0; ch < 4; ++ch)
+        for (size_t key = 0; key < 4; ++key) colors[ch * 4 + key] = d.f(0x34 + 16 * key + 4 * ch);
+    float curvature = d.f(0x20), emissive = d.f(0x24);
+    auto loc = [&](const char* n) { return glGetUniformLocation(prog->id, n); };
+    glUniform1fv(loc("u_numFrames"), 1, &numF);
+    glUniform2fv(loc("u_textureSize"), 1, texSz);
+    glUniform2fv(loc("u_frameSize"), 1, frameSz);
+    glUniform1fv(loc("u_frameStride"), 1, &stride);
+    glUniform2fv(loc("u_frameRatio"), 1, ratio);
+    glUniform2fv(loc("u_frameScale"), 1, scale);
+    glUniform4fv(loc("u_particleSizeScaleX"), 1, sizeX);
+    glUniform4fv(loc("u_particleSizeScaleY"), 1, sizeY);
+    glUniform4fv(loc("u_particleRotation"), 1, rotation);
+    glUniformMatrix4fv(loc("u_particleColors"), 1, GL_FALSE, colors);
+    glUniform4fv(loc("u_color"), 1, em.color);
+    glUniform1fv(loc("u_curvature"), 1, &curvature);
+    glUniform1fv(loc("u_emissive"), 1, &emissive);
+    // world-space systems (definition +0x1e9) draw with an identity world matrix
+    Mat4 world = d.b(0x1e9) ? Mat4() : it.particleWorld;
+    Mat4 wv = vp.view * world;
+    for (size_t i = 0; i < un.size(); ++i) {
+        GLint l = prog->loc[i];
+        if (l < 0 || un[i].semantic == 0xFFFF) continue;
+        switch (static_cast<Semantic>(un[i].semantic)) {
+            case Semantic::WorldMatrix: uploadMat(l, world); break;
+            case Semantic::ViewMatrix: uploadMat(l, vp.view); break;
+            case Semantic::ProjMatrix: uploadMat(l, vp.proj); break;
+            case Semantic::WorldViewMatrix: uploadMat(l, wv); break;
+            case Semantic::WorldViewProjMatrix: uploadMat(l, vp.proj * wv); break;
+            case Semantic::Time: glUniform1fv(l, 1, &vp.time); break;
+            default: break;
+        }
+    }
+
+    glBindVertexArray(particleVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, particleVbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(particleVerts_.size() * 4), particleVerts_.data(), GL_STREAM_DRAW);
+    struct Attr {
+        const char* name;
+        GLint comps;
+        GLenum type;
+        GLboolean norm;
+        size_t offset;
+        GLint loc;
+    };
+    Attr attrs[] = {{"a_pos", 4, GL_FLOAT, GL_FALSE, 0x00, -1},          {"a_size", 4, GL_FLOAT, GL_FALSE, 0x10, -1},
+                    {"a_col", 4, GL_UNSIGNED_BYTE, GL_TRUE, 0x20, -1},    {"a_frame", 4, GL_UNSIGNED_BYTE, GL_FALSE, 0x24, -1},
+                    {"a_colorLife", 1, GL_FLOAT, GL_FALSE, 0x28, -1},     {"a_rotLife", 1, GL_FLOAT, GL_FALSE, 0x2c, -1}};
+    for (Attr& a : attrs) {
+        a.loc = glGetAttribLocation(prog->id, a.name);
+        if (a.loc >= 0) glEnableVertexAttribArray(static_cast<GLuint>(a.loc));
+    }
+    for (size_t first = 0; first < ps.size(); first += kCapacity) {
+        size_t n = std::min<size_t>(kCapacity, ps.size() - first);
+        for (const Attr& a : attrs)
+            if (a.loc >= 0)
+                glVertexAttribPointer(static_cast<GLuint>(a.loc), a.comps, a.type, a.norm, 0x30,
+                                      reinterpret_cast<const void*>(a.offset + first * 4 * 0x30));
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(n * 6), GL_UNSIGNED_SHORT, nullptr);
+        ++drawCalls_;
+    }
+    for (const Attr& a : attrs)
+        if (a.loc >= 0) glDisableVertexAttribArray(static_cast<GLuint>(a.loc));
+    glBindVertexArray(0);
 }
 
 }  // namespace oyster

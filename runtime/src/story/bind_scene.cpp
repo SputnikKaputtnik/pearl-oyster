@@ -95,8 +95,60 @@ int Scene_createAtmospheric(lua_State* L) {
     return createNode<SGNode>(L, "Atmospherics", SGNode::Kind::Atmospherics);
 }
 int Scene_createParticleEmitter(lua_State* L) {
-    // (scene, name, particle system uri) - particles are rendered in a later milestone
-    createNode<SGNode>(L, "ParticleEmitter", SGNode::Kind::Particles);
+    // (scene, name, particle system uri); createParentedParticleEmitter(scene, name, parent, uri)
+    int uriArg = lua_gettop(L) >= 4 ? 4 : 3;
+    std::string uri = optString(L, uriArg);
+    createNode<ParticleNode>(L, "ParticleEmitter", SGNode::Kind::Particles);
+    auto* p = objectArg<ParticleNode>(L, -1);
+    if (p && !uri.empty())
+        if (auto ps = engineOf(L).particleSystem(uri)) p->emitter = std::make_unique<ParticleEmitter>(ps);
+    return 1;
+}
+ParticleEmitter* emitterArg(lua_State* L) {
+    auto* p = objectArg<ParticleNode>(L, 1);
+    return p ? p->emitter.get() : nullptr;
+}
+int PE_setEmitRate(lua_State* L) {
+    if (ParticleEmitter* e = emitterArg(L)) {
+        e->customRate = true;
+        e->rate = static_cast<float>(optNumber(L, 2, 0));
+    }
+    return 0;
+}
+int PE_getEmitRate(lua_State* L) {
+    ParticleEmitter* e = emitterArg(L);
+    lua_pushnumber(L, !e ? 0.0 : e->customRate ? e->rate : e->resource().f(0x8));
+    return 1;
+}
+int PE_setTimeScale(lua_State* L) {
+    if (ParticleEmitter* e = emitterArg(L)) e->timeScale = static_cast<float>(optNumber(L, 2, 1));
+    return 0;
+}
+int PE_getTimeScale(lua_State* L) {
+    ParticleEmitter* e = emitterArg(L);
+    lua_pushnumber(L, e ? e->timeScale : 1.0);
+    return 1;
+}
+int PE_setColor(lua_State* L) {
+    if (ParticleEmitter* e = emitterArg(L); e && lua_istable(L, 2)) {
+        e->color[0] = static_cast<float>(fieldOr(L, 2, "r", 1));
+        e->color[1] = static_cast<float>(fieldOr(L, 2, "g", 1));
+        e->color[2] = static_cast<float>(fieldOr(L, 2, "b", 1));
+        e->color[3] = static_cast<float>(fieldOr(L, 2, "a", 1));
+    }
+    return 0;
+}
+int PE_reset(lua_State* L) {
+    if (ParticleEmitter* e = emitterArg(L)) e->reset();
+    return 0;
+}
+int PE_setParticleEnable(lua_State* L) {
+    if (ParticleEmitter* e = emitterArg(L)) e->enabled = lua_toboolean(L, 2) != 0;
+    return 0;
+}
+int PE_getParticleEnable(lua_State* L) {
+    ParticleEmitter* e = emitterArg(L);
+    lua_pushboolean(L, e && e->enabled);
     return 1;
 }
 int Scene_createVideoCubePlayer(lua_State* L) {
@@ -751,7 +803,11 @@ void bindScene(Engine& e) {
     h.bindType("Atmospherics", atm, "Transform");
     static const luaL_Reg fog[] = {{"setFogParams", Fog_setFogParams}, {"destroy", Generic_destroy}, {nullptr, nullptr}};
     h.bindType("Fog", fog);
-    static const luaL_Reg particles[] = {{"destroy", Generic_destroy}, {nullptr, nullptr}};
+    static const luaL_Reg particles[] = {{"destroy", Generic_destroy}, {"setEmitRate", PE_setEmitRate},
+                                         {"getEmitRate", PE_getEmitRate}, {"setTimeScale", PE_setTimeScale},
+                                         {"getTimeScale", PE_getTimeScale}, {"setColor", PE_setColor},
+                                         {"reset", PE_reset}, {"setParticleEnable", PE_setParticleEnable},
+                                         {"getParticleEnable", PE_getParticleEnable}, {nullptr, nullptr}};
     h.bindType("ParticleEmitter", particles, "Transform");
     h.bindType("Projector", nullptr, "Transform");
     h.bindType("Depth", nullptr, "Transform");
