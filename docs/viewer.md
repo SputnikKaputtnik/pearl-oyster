@@ -27,6 +27,18 @@ Official source (`git clone --branch v2.1 https://luajit.org/git/luajit.git`, ch
 kept (GC64, no Lua 5.2 compat — the original used 5.1-dialect LuaJIT 2.0.4). Smoke test
 `oyster_lua`: JIT on, FFI on; **all 179 shipped `.lua` files compile** with it.
 
+### Native API probe
+
+`tools/lua_api_probe.lua` (run with `oyster_lua`) executes the original bootstrap
+(`story/scripts/app.lua`, `Platform.package = "pearl_vrcam"`) with logging proxies for every
+unknown global. Result (2026-10-03): `require`, `Application.onInitialize` (story initialise +
+start) and `onReshape` **run unmodified on LuaJIT 2.1**; `onUpdate` stops in
+`CameraRigController:save` because proxies return no real scene objects. 229 native names are
+touched during init (log in the work dir), e.g. `RenderManager.createRenderGraph` ×40,
+`Scene.super.createActor`, `System.createResourceGroup`, `Time.setErrorCorrectParams`,
+`DisplayDevice.setFovScalar / setInterpupillaryDistanceScalar / setSplashPath`. This list is the
+starting point of the native API layer (next work package).
+
 ## Code map (`runtime/`)
 
 * `src/core` – binary/bit readers, FNV-1a, package FS (case-insensitive URIs), JSON, math
