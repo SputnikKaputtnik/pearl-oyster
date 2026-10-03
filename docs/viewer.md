@@ -18,6 +18,15 @@ meshes → interpolated animation), render size and MSAA are parameters. Planned
 toggle (`u_GrainAmplitude` = 0), ASW motion vectors from consecutive vertex-animation frames,
 camera-cut detection so interpolation never blends across a cut.
 
+## LuaJIT
+
+Official source (`git clone --branch v2.1 https://luajit.org/git/luajit.git`, checked out at
+`C:\Tools\luajit`, commit c6ffc141, 2026-09-08; not part of this repo, MIT licence). Built by
+`runtime/cmake/luajit.cmake`, which mirrors `src/msvcbuild.bat` with gcc (minilua → DynASM
+`vm_x64.dasc` → buildvm → `lj_vm.o` + generated headers, all in the build directory); defaults
+kept (GC64, no Lua 5.2 compat — the original used 5.1-dialect LuaJIT 2.0.4). Smoke test
+`oyster_lua`: JIT on, FFI on; **all 179 shipped `.lua` files compile** with it.
+
 ## Code map (`runtime/`)
 
 * `src/core` – binary/bit readers, FNV-1a, package FS (case-insensitive URIs), JSON, math

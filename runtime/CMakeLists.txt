@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(oyster CXX)
+project(oyster C CXX)
 
 # Project Oyster runtime: a Moxie-compatible player for the user's own Pearl installation.
 # Core (formats, scene, GLES3 renderer) is platform independent; platform layers live in apps/.
@@ -29,6 +29,11 @@ add_library(oyster_core STATIC
   src/scene/model_instance.cpp
 )
 target_include_directories(oyster_core PUBLIC src)
+
+include(cmake/luajit.cmake)
+
+add_executable(oyster_lua apps/lua/main.cpp)
+target_link_libraries(oyster_lua PRIVATE luajit)
 
 add_executable(oyster_check apps/check/main.cpp)
 target_link_libraries(oyster_check PRIVATE oyster_core)
