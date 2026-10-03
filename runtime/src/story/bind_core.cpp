@@ -2,6 +2,7 @@
 // StoryFSM, ResourceGroup, Stat, Rpc, Analytics and the global helpers __status / __inspect.
 // Platform services the desktop player does not have (Android, analytics, RPC, sensors) answer
 // like the original desktop build without such devices.
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -168,11 +169,42 @@ int In_getMouseWheelDelta(lua_State* L) {
 }
 int In_zero(lua_State* L) { lua_pushnumber(L, 0); return 1; }
 
-// ---- DisplayDevice / Sensor (desktop mono: no HMD, no sensors) -------------------------------
+// ---- DisplayDevice / Sensor ------------------------------------------------------------------
+// Desktop mono: DT_HHD without sensors. With an HMD (Engine::hmd) the natives answer like the
+// original's OpenVR DisplayDeviceHMD (vtable @0x18024f008): type DT_HMD, orientation = HMD
+// rotation, room-scale translation = tracked position (m) x the IPD scalar (FUN_18018d070).
 int DD_getType(lua_State* L) {
-    // DT_* from common/scripts/displaydevice.lua: desktop mono = DT_HHD (0), no HMD
-    lua_pushnumber(L, 0);
+    // DT_* from common/scripts/displaydevice.lua: DT_HHD 0, DT_HMD 1
+    lua_pushnumber(L, engineOf(L).hmd().active ? 1 : 0);
     return 1;
+}
+int DD_hmdActive(lua_State* L) {
+    lua_pushboolean(L, engineOf(L).hmd().active);
+    return 1;
+}
+int DD_getSensorFusionOrientation(lua_State* L) {
+    const HmdState& h = engineOf(L).hmd();
+    if (!h.active) return 0;
+    Quat q = h.orientation;
+    float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (n > 0.0f) q = Quat(q.x / n, q.y / n, q.z / n, q.w / n);
+    LuaHost::from(L).pushQuat(L, q);
+    return 1;
+}
+int DD_getSensorFusionTranslation(lua_State* L) {
+    Engine& e = engineOf(L);
+    if (!e.hmd().active) return 0;
+    const Vec3& p = e.hmd().position;
+    LuaHost::from(L).pushVec3(L, Vec3(p.x * e.ipdScalar, p.y * e.ipdScalar, p.z * e.ipdScalar));
+    return 1;
+}
+int DD_setInterpupillaryDistanceScalar(lua_State* L) {
+    engineOf(L).ipdScalar = static_cast<float>(optNumber(L, firstArg(L), 0));
+    return 0;
+}
+int DD_setFovScalar(lua_State* L) {
+    engineOf(L).fovScalar = static_cast<float>(optNumber(L, firstArg(L), 0));
+    return 0;
 }
 int DD_false(lua_State* L) { lua_pushboolean(L, 0); return 1; }
 int DD_noop(lua_State* L) { return 0; }
@@ -279,10 +311,11 @@ void bindCore(Engine& e) {
 
     static const luaL_Reg dd[] = {
         {"getType", DD_getType}, {"hasSensorRotation", DD_false}, {"getSensorRotation", DD_identityQuat},
-        {"hasSensorFusionOrientation", DD_false}, {"getSensorFusionOrientation", DD_identityQuat},
-        {"isRoomBasedVR", DD_false}, {"hasSensorFusionTranslation", DD_false},
-        {"getSensorFusionTranslation", DD_zeroVec}, {"setInterpupillaryDistanceScalar", DD_noop},
-        {"setFovScalar", DD_noop}, {"setSplashPath", DD_noop}, {nullptr, nullptr}};
+        {"hasSensorFusionOrientation", DD_hmdActive}, {"getSensorFusionOrientation", DD_getSensorFusionOrientation},
+        {"isRoomBasedVR", DD_hmdActive}, {"hasSensorFusionTranslation", DD_hmdActive},
+        {"getSensorFusionTranslation", DD_getSensorFusionTranslation},
+        {"setInterpupillaryDistanceScalar", DD_setInterpupillaryDistanceScalar}, {"setFovScalar", DD_setFovScalar},
+        {"setSplashPath", DD_noop}, {nullptr, nullptr}};
     h.bindType("DisplayDevice", dd);
 
     static const luaL_Reg sensor[] = {

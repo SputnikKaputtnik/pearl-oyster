@@ -347,8 +347,7 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
         } else if (u.semantic == static_cast<uint16_t>(Semantic::ScreenSize)) {
             glUniform2fv(loc, 1, vp.screenSize);
         } else if (u.semantic == static_cast<uint16_t>(Semantic::ViewMid)) {
-            const float mid[2] = {0, 0};  // [I] mono: view centre = 0
-            glUniform2fv(loc, 1, mid);
+            glUniform2fv(loc, 1, vp.viewMid);
         } else if (u.semantic == static_cast<uint16_t>(Semantic::Time)) {
             glUniform1fv(loc, 1, &vp.time);
         }
@@ -628,7 +627,7 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                     case Semantic::Time: glUniform1fv(loc, 1, &vp.time); break;
                     case Semantic::AspectRatio: glUniform1fv(loc, 1, &vp.aspect); break;
                     case Semantic::ScreenSize: glUniform2fv(loc, 1, vp.screenSize); break;
-                    case Semantic::ViewMid: { const float mid[2] = {0, 0}; glUniform2fv(loc, 1, mid); break; }  // [I] mono
+                    case Semantic::ViewMid: glUniform2fv(loc, 1, vp.viewMid); break;
                     case Semantic::ViewIndex: glUniform1i(loc, vp.viewIndex); break;
                     case Semantic::LightCount: glUniform1i(loc, lightCount); break;
                     case Semantic::LightPosition: glUniform4fv(loc, 4, lpos); break;

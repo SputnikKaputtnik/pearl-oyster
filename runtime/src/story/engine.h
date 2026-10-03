@@ -113,8 +113,23 @@ struct SceneObj : NativeObject {
 
 struct RenderGraphObj : NativeObject {
     std::string name;
-    Json def;
+    Json def, views;
     std::unique_ptr<RenderGraph> graph;
+    std::unique_ptr<RenderGraph> eyeGraph[2];  // stereo: one instance (own targets) per eye
+};
+
+// Head-mounted display as the original's OpenVR display device presents it (DisplayDeviceHMD,
+// docs/vr.md): pose in the tracking space (metres, floor origin), the user's IPD, per-eye field of
+// view as tangents and the per-eye render size. Filled by the platform layer before each frame.
+struct HmdState {
+    bool active = false;
+    Quat orientation;
+    Vec3 position{0, 0, 0};
+    float ipd = 0.063f;
+    struct Eye {
+        float tanLeft = -1, tanRight = 1, tanUp = 1, tanDown = -1;
+    } eye[2];
+    int width = 1024, height = 1024;
 };
 
 // Plain handle types the scripts only pass around (resource groups, FSMs, stats, views, ...).
@@ -184,6 +199,10 @@ public:
     const EngineOptions& options() const { return opt_; }
     TimeState& time() { return time_; }
     InputState& input() { return input_; }
+    HmdState& hmd() { return hmd_; }
+    float ipdScalar = 1.0f;  // DisplayDevice.setInterpupillaryDistanceScalar (display +0x24)
+    float fovScalar = 1.0f;  // DisplayDevice.setFovScalar (display +0x20)
+    const RenderTarget* eyeOutput(int eye) const;  // stereo frame of the active graph
     Renderer& renderer() { return *renderer_; }
     audio::Engine& audio() { return *audio_; }
     std::shared_ptr<const audio::PcmClip> audioClip(const std::string& uri);  // decoded, cached
@@ -238,6 +257,7 @@ private:
     bool hrtfLoaded_ = false;
     TimeState time_;
     InputState input_;
+    HmdState hmd_;
     RenderGraphObj* activeGraph_ = nullptr;
     std::map<std::string, std::shared_ptr<ModelResource>> models_;
     std::map<std::string, std::shared_ptr<AnimResource>> anims_;

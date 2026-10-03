@@ -8,7 +8,10 @@
 //                      [--window] [--remaster] [--log] [--status K  (FSM status every K frames)]
 #include <SDL.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -31,6 +34,8 @@ struct Args {
     double fixedMs = 33.3333;
     long frames = 0, dumpFrom = 0, dumpEvery = 1, status = 0;
     bool window = false, remaster = false, log = false, mute = false;
+    bool vr = false;  // desktop HMD emulation: stereo, head = mouse (docs/vr.md)
+    int eyeW = 1024, eyeH = 1056;
 };
 
 bool parseArgs(int argc, char** argv, Args& a) {
@@ -54,6 +59,8 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--status") a.status = std::stol(next());
         else if (k == "--wav") a.wav = next();
         else if (k == "--mute") a.mute = true;
+        else if (k == "--vr") a.vr = true;
+        else if (k == "--eye") { std::string s = next(); std::sscanf(s.c_str(), "%dx%d", &a.eyeW, &a.eyeH); }
         else {
             std::fprintf(stderr, "unknown argument %s\n", k.c_str());
             return false;
@@ -138,6 +145,22 @@ int main(int argc, char** argv) {
         opt.msaa = args.msaa;
         opt.policy = args.remaster ? SamplingPolicy::remaster() : SamplingPolicy::original();
         story::Engine engine(fs, opt);
+        // Emulated HMD (set before boot: the camera rig asks DisplayDevice.getType on creation):
+        // seated (head 1.2 m above the tracking-space floor - Pearl waits for a seated viewer), IPD 63 mm, a Quest-3-like asymmetric
+        // per-eye field of view. The head turns with the mouse (left button), see below.
+        float headYaw = 0, headPitch = 0, headHeight = 1.2f;
+        if (args.vr) {
+            story::HmdState& h = engine.hmd();
+            h.active = true;
+
+            h.ipd = 0.063f;
+            h.width = args.eyeW;
+            h.height = args.eyeH;
+            h.eye[0] = {-1.13f, 0.84f, 0.90f, -1.13f};
+            h.eye[1] = {-0.84f, 1.13f, 0.90f, -1.13f};
+            if (const char* hd = std::getenv("OYSTER_DEBUG_HEAD")) std::sscanf(hd, "%f,%f,%f", &headYaw, &headPitch, &headHeight);
+            h.position = Vec3(0, headHeight, 0);
+        }
         engine.lua().echoLog = args.log;
         engine.time().fixedStepMs = args.fixedMs;
         if (!engine.boot()) throw std::runtime_error("story boot failed: " + engine.lua().lastError());
@@ -176,7 +199,20 @@ int main(int argc, char** argv) {
                 if (ev.type == SDL_QUIT) quit = true;
                 else if (ev.type == SDL_MOUSEWHEEL) wheel += static_cast<float>(ev.wheel.y);
             }
-            if (args.window) {
+            if (args.vr) {
+                // head orientation: yaw about +Y, then pitch about the head's X axis
+                if (args.window) {
+                    int dx = 0, dy = 0;
+                    Uint32 mb = SDL_GetRelativeMouseState(&dx, &dy);
+                    if (mb & SDL_BUTTON_LMASK) {
+                        headYaw -= static_cast<float>(dx) * 0.004f;
+                        headPitch = std::max(-1.5f, std::min(1.5f, headPitch - static_cast<float>(dy) * 0.004f));
+                    }
+                }
+                Quat qy(0, std::sin(headYaw * 0.5f), 0, std::cos(headYaw * 0.5f));
+                Quat qp(std::sin(headPitch * 0.5f), 0, 0, std::cos(headPitch * 0.5f));
+                engine.hmd().orientation = qy * qp;
+            } else if (args.window) {
                 int mx = 0, my = 0;
                 Uint32 mb = SDL_GetMouseState(&mx, &my);
                 const bool b[3] = {(mb & SDL_BUTTON_LMASK) != 0, (mb & SDL_BUTTON_MMASK) != 0,
@@ -230,6 +266,37 @@ for _, fsm in ipairs(Global.story.statemachines) do
 end
 print(s))lua", "=status");
                 if (!args.watch.empty()) engine.lua().doString(std::string(code) + args.watch, "=watch");
+            }
+            if (args.vr) {
+                const RenderTarget* e0 = engine.eyeOutput(0);
+                const RenderTarget* e1 = engine.eyeOutput(1);
+                if (e0 && e1 && !args.out.empty() && f >= args.dumpFrom && (f - args.dumpFrom) % args.dumpEvery == 0) {
+                    // both eyes side by side (left | right)
+                    int w = e0->width, h = e0->height;
+                    std::vector<uint8_t> eyePx(static_cast<size_t>(w) * h * 4);
+                    px.assign(static_cast<size_t>(w) * 2 * h * 4, 0);
+                    for (int e = 0; e < 2; ++e) {
+                        glBindFramebuffer(GL_FRAMEBUFFER, (e ? e1 : e0)->fbo);
+                        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, eyePx.data());
+                        for (int y = 0; y < h; ++y)
+                            std::memcpy(&px[(static_cast<size_t>(y) * w * 2 + static_cast<size_t>(e) * w) * 4],
+                                        &eyePx[static_cast<size_t>(y) * w * 4], static_cast<size_t>(w) * 4);
+                    }
+                    char name[1024];
+                    std::snprintf(name, sizeof(name), args.out.c_str(), static_cast<int>(f));
+                    writeTGA(name, w * 2, h, px);
+                }
+                if (args.window && e0 && e1) {
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e0->fbo);
+                    glBlitFramebuffer(0, 0, e0->width, e0->height, 0, 0, args.w / 2, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e1->fbo);
+                    glBlitFramebuffer(0, 0, e1->width, e1->height, args.w / 2, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    SDL_GL_SwapWindow(win);
+                }
+                if (engine.exitRequested) break;
+                continue;
             }
             const RenderTarget* out = engine.output();
             if (out && !args.out.empty() && f >= args.dumpFrom && (f - args.dumpFrom) % args.dumpEvery == 0) {

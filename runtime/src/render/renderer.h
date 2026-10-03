@@ -33,6 +33,7 @@ struct ViewParams {
     float zfar = 1.0f;               // camera far plane (sort depth normalization)
     float time = 0.0f;
     int viewIndex = 0;
+    float viewMid[2] = {0, 0};       // u_viewMid: optical centre of the eye in NDC (0 in mono)
     uint32_t viewFlag = 2;           // render view flag (RV1 = 2 main, RV2 = 4 warp, RV3 = 8 shadow)
     int passId = 2;                  // material pass (0 warp, 1 shadow, 2 color)
     std::vector<Light> lights;

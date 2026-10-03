@@ -484,6 +484,7 @@ RenderGraphObj* Engine::createRenderGraph(const Json& def) {
     lua_getfield(L, -1, "renderviews");
     Json views = luaToJson(L, -1);
     lua_pop(L, 2);
+    g->views = views;
     try {
         g->graph = std::make_unique<RenderGraph>(def, views, fs_);
     } catch (const std::exception& ex) {
@@ -509,12 +510,19 @@ const RenderTarget* Engine::output() const {
     return &activeGraph_->graph->output();
 }
 
+const RenderTarget* Engine::eyeOutput(int eye) const {
+    if (!activeGraph_ || eye < 0 || eye > 1 || !activeGraph_->eyeGraph[eye]) return nullptr;
+    return &activeGraph_->eyeGraph[eye]->output();
+}
+
 void Engine::draw() {
     if (!activeGraph_ || !activeGraph_->graph) return;
     for (auto* g : graphs)
-        if (g != activeGraph_ && g->graph) g->graph->release();
-    RenderGraph& graph = *activeGraph_->graph;
-    graph.resize(width_, height_, opt_.msaa);
+        if (g != activeGraph_) {
+            if (g->graph) g->graph->release();
+            for (auto& eg : g->eyeGraph)
+                if (eg) eg->release();
+        }
 
     std::vector<SceneItem> items;
     const ModelInstance* graphAnim = nullptr;
@@ -556,6 +564,7 @@ void Engine::draw() {
 
     ViewParams vp;
     float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+    if (hmd_.active) aspect = static_cast<float>(hmd_.width) / static_cast<float>(hmd_.height);
     if (mainCamera) {
         CameraNode& c = *mainCamera;
         vp.view = c.worldMatrix().inverse();
@@ -598,7 +607,52 @@ void Engine::draw() {
         }
     }
     renderer_->resetStats();
-    graph.execute(*renderer_, items, vp, graphAnim);
+    if (!hmd_.active) {
+        RenderGraph& graph = *activeGraph_->graph;
+        graph.resize(width_, height_, opt_.msaa);
+        graph.execute(*renderer_, items, vp, graphAnim);
+        return;
+    }
+    // Stereo (CameraVR, FUN_18018a5f0 / FUN_18018a740): each eye views from the centre camera
+    // shifted sideways by half the user's IPD times the story's IPD scalar (left eye: view
+    // translated by +half), with the runtime's per-eye frustum at the camera's near/far planes.
+    // Every eye runs the whole render graph into its own targets (RenderView::beginEye).
+    float zn = mainCamera ? mainCamera->znear : 0.01f;
+    float zf = vp.zfar;
+    float half = ipdScalar * hmd_.ipd * 0.5f;
+    for (int eye = 0; eye < 2; ++eye) {
+        auto& eg = activeGraph_->eyeGraph[eye];
+        if (!eg) {
+            try {
+                eg = std::make_unique<RenderGraph>(activeGraph_->def, activeGraph_->views, fs_);
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr, "render graph %s: %s\n", activeGraph_->name.c_str(), ex.what());
+                return;
+            }
+        }
+        eg->resize(hmd_.width, hmd_.height, opt_.msaa);
+        ViewParams ev = vp;
+        Mat4 shift;
+        shift.m[3] = eye == 0 ? half : -half;
+        ev.view = shift * vp.view;
+        const HmdState::Eye& e = hmd_.eye[eye];
+        float l = e.tanLeft * zn, r = e.tanRight * zn, t = e.tanUp * zn, b = e.tanDown * zn;
+        Mat4 proj;  // Matrix4::makeFrustum
+        proj.setIdentity();
+        proj.m[0] = 2.0f * zn / (r - l);
+        proj.m[2] = (r + l) / (r - l);
+        proj.m[5] = 2.0f * zn / (t - b);
+        proj.m[6] = (t + b) / (t - b);
+        proj.m[10] = (zf + zn) / (zn - zf);
+        proj.m[11] = 2.0f * zf * zn / (zn - zf);
+        proj.m[14] = -1.0f;
+        proj.m[15] = 0.0f;
+        ev.proj = proj;
+        ev.viewIndex = eye;
+        ev.viewMid[0] = (r + l) / (r - l);  // optical axis in NDC (DisplayDeviceHMD slot +0x38)
+        ev.viewMid[1] = (t + b) / (t - b);
+        eg->execute(*renderer_, items, ev, graphAnim);
+    }
 }
 
 }  // namespace oyster::story
