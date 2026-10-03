@@ -8,8 +8,12 @@ moxie.v2 (see [native-api.md](native-api.md)) in `runtime/src/story/`.
 ```
 oyster_player --root <install> [--frames N] [--fixed 33.3333] [--size 1280x720] [--msaa 2]
               [--out dir/f%05d.tga --dump-from F --dump-every K] [--window] [--remaster]
-              [--status K] [--watch "<lua>"] [--eval "<lua>"] [--log]
+              [--status K] [--watch "<lua>"] [--eval "<lua>"] [--log] [--vr [--eye WxH]] [--threaded]
 ```
+
+`--vr` emulates the HMD (docs/vr.md). `--threaded` moves all GL calls to a render thread that
+replays them in call order (`render/gl_thread.h`, as on the Quest); the dumped frames must be
+byte-identical to a run without it.
 
 Run it with a scratch directory as working directory: the story tries to write checkpoints to
 `saves/` (relative), exactly like the original.
