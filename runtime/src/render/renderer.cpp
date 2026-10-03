@@ -173,7 +173,10 @@ Renderer::~Renderer() {
     for (auto& kv : textures_) glDeleteTextures(1, &kv.second);
     for (auto& kv : programs_) if (kv.second->id) glDeleteProgram(kv.second->id);
     for (auto& kv : meshes_)
-        for (GpuMesh& g : kv.second) freeMesh(g);
+        for (GpuMesh& g : kv.second.meshes) freeMesh(g);
+    for (auto& kv : geometry_)
+        for (StaticMesh& sm : kv.second.meshes) freeStatic(sm);
+    flushDeletes(~size_t(0));
     glDeleteTextures(1, &white_);
     if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); glDeleteBuffers(1, &quadVbo_); }
     if (particleVao_) {
@@ -185,12 +188,50 @@ Renderer::~Renderer() {
 
 void Renderer::freeMesh(GpuMesh& g) {
     if (!g.vao) return;
-    glDeleteVertexArrays(1, &g.vao);
-    glDeleteBuffers(10, g.vbo);
-    glDeleteBuffers(1, &g.ibo);
-    if (g.dynPos) glDeleteBuffers(1, &g.dynPos);
-    if (g.dynNrm) glDeleteBuffers(1, &g.dynNrm);
+    deadVaos_.push_back(g.vao);
+    if (g.dynPos) deadBuffers_.push_back(g.dynPos);
+    if (g.dynNrm) deadBuffers_.push_back(g.dynNrm);
     g = GpuMesh();
+}
+
+void Renderer::freeStatic(StaticMesh& sm) {
+    if (sm.vbo) deadBuffers_.push_back(sm.vbo);
+    if (sm.ibo) deadBuffers_.push_back(sm.ibo);
+    sm = StaticMesh();
+}
+
+void Renderer::flushDeletes(size_t max) {
+    auto flush = [max](std::vector<GLuint>& names, void (*del)(GLsizei, const GLuint*)) {
+        if (names.empty()) return;
+        size_t n = std::min(max, names.size());
+        del(static_cast<GLsizei>(n), names.data() + names.size() - n);
+        names.resize(names.size() - n);
+    };
+    for (GLuint v : deadVaos_)
+        if (v == boundVao_) boundVao_ = 0;  // deleting the bound vertex array binds 0
+    flush(deadVaos_, gl::glDeleteVertexArrays);
+    flush(deadBuffers_, gl::glDeleteBuffers);
+}
+
+namespace {
+double nowSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
+// Geometry no instance has drawn for two minutes (models of finished shots, prefetched branches
+// the story did not take) leaves the GPU.
+void Renderer::expireGeometry() {
+    double now = nowSeconds();
+    for (auto it = geometry_.begin(); it != geometry_.end();) {
+        SharedGeometry& sg = it->second;
+        if (sg.users == 0 && now - sg.idleSince > 120.0) {
+            for (StaticMesh& sm : sg.meshes) freeStatic(sm);
+            it = geometry_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void Renderer::releaseInstance(uint64_t instanceId) {
@@ -199,10 +240,9 @@ void Renderer::releaseInstance(uint64_t instanceId) {
     bounds_.erase(instanceId);
     auto it = meshes_.find(instanceId);
     if (it != meshes_.end()) {
-        for (GpuMesh& g : it->second) {
-            if (g.vao == boundVao_) boundVao_ = 0;  // a deleted bound VAO reverts to 0
-            freeMesh(g);
-        }
+        for (GpuMesh& g : it->second.meshes) freeMesh(g);
+        auto sg = geometry_.find(it->second.geometry);
+        if (sg != geometry_.end() && --sg->second.users == 0) sg->second.idleSince = nowSeconds();
         meshes_.erase(it);
     }
 }
@@ -216,6 +256,8 @@ void Renderer::warnOnce(const std::string& w) {
 
 void Renderer::beginFrame() {
     ++frame_;
+    if (frame_ % 256 == 0) expireGeometry();
+    flushDeletes(512);
     stateValid_ = false;  // the platform layer may have changed GL state between frames
     curProgram_ = 0;
     if (texBudget_ == 0 || texBytes_ <= texBudget_) return;
@@ -457,39 +499,103 @@ Renderer::Program* Renderer::program(const std::string& uriIn) {
     return raw;
 }
 
-Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
-    std::vector<GpuMesh>& per = meshes_[inst.id()];
-    if (per.empty()) per.resize(inst.model().meshes.size());
-    GpuMesh& g = per[mi];
-    if (g.vao) return g;
-    const Mesh& m = inst.model().meshes[mi];
+namespace {
+constexpr int kSlotComps[10] = {3, 3, 3, 2, 2, 2, 2, 4, 4, 4};  // position normal tangent uv0-3 color weights joints
+}  // namespace
+
+Renderer::SharedGeometry& Renderer::sharedGeometry(const std::shared_ptr<const ModelResource>& model) {
+    SharedGeometry& sg = geometry_[model.get()];
+    if (!sg.model) {
+        sg.model = model;
+        sg.meshes.resize(model->meshes.size());
+        sg.idleSince = nowSeconds();
+    }
+    return sg;
+}
+
+size_t Renderer::uploadStatic(const ModelResource& model, StaticMesh& sm, size_t mi) {
+    if (sm.uploaded) return 0;
+    sm.uploaded = true;
+    const Mesh& m = model.meshes[mi];
     const VertexData& v = m.vertices;
-    g.vertexCount = v.count;
-    glGenVertexArrays(1, &g.vao);
-    bindVao(g.vao);
-    auto upload = [&](GLuint slot, const std::vector<float>& data, int comps) {
-        if (data.empty()) return;
-        glGenBuffers(1, &g.vbo[slot]);
-        glBindBuffer(GL_ARRAY_BUFFER, g.vbo[slot]);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * 4), data.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(slot);
-        glVertexAttribPointer(slot, comps, GL_FLOAT, GL_FALSE, 0, nullptr);
-    };
-    upload(0, v.position, 3);
-    upload(1, v.normal, 3);
-    upload(2, v.tangent, 3);
-    for (int k = 0; k < 4; ++k) upload(3 + static_cast<GLuint>(k), v.uv[k], 2);
+    const std::vector<float>* slots[10] = {&v.position, &v.normal, &v.tangent, &v.uv[0], &v.uv[1],
+                                           &v.uv[2],    &v.uv[3],  &v.color,   &v.weights, &v.joints};
+    std::vector<uint8_t> blob;
+    for (int s = 0; s < 10; ++s) {
+        const std::vector<float>& data = *slots[s];
+        if (data.empty()) continue;
+        sm.has[s] = true;
+        sm.offset[s] = blob.size();
+        blob.resize(blob.size() + data.size() * 4);
+        std::memcpy(blob.data() + sm.offset[s], data.data(), data.size() * 4);
+    }
     // [I] Observed: where a mesh has no second UV set, the original feeds uv0 to a_texcoord1
     // (Pearl's warp-pass shaders read a_texcoord1). Verified against the reference frame that shows
     // the warp pass directly (mean difference 4.87 -> 1.15); the engine's own code would disable
     // the attribute, so the mechanism is on the driver side (NVIDIA compatibility context).
-    if (v.uv[1].empty() && !v.uv[0].empty()) upload(4, v.uv[0], 2);
-    upload(7, v.color, 4);
-    upload(8, v.weights, 4);
-    upload(9, v.joints, 4);
-    glGenBuffers(1, &g.ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
+    if (!sm.has[4] && sm.has[3]) {
+        sm.has[4] = true;
+        sm.offset[4] = sm.offset[3];
+    }
+    bindVao(0);  // the element buffer binding below must not land in some instance's VAO
+    if (!blob.empty()) {
+        glGenBuffers(1, &sm.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(blob.size()), blob.data(), GL_STATIC_DRAW);
+    }
+    glGenBuffers(1, &sm.ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sm.ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(m.indices.size() * 2), m.indices.data(), GL_STATIC_DRAW);
+    return blob.size() + m.indices.size() * 2;
+}
+
+bool Renderer::preloadGeometry(const std::shared_ptr<const ModelResource>& model, size_t maxBytes, size_t maxMeshes) {
+    if (!model || model->meshes.empty()) return false;
+    SharedGeometry& sg = sharedGeometry(model);
+    size_t bytes = 0, meshes = 0;
+    bool any = false;
+    for (size_t mi = 0; mi < sg.meshes.size(); ++mi) {
+        if (sg.meshes[mi].uploaded) continue;
+        const Mesh& m = model->meshes[mi];
+        if (m.vertices.count == 0 || m.indices.empty()) {
+            sg.meshes[mi].uploaded = true;  // never drawn
+            continue;
+        }
+        if (bytes >= maxBytes || meshes >= maxMeshes) return true;
+        ++meshes;
+        size_t b = uploadStatic(*model, sg.meshes[mi], mi);
+        static const bool debugPreload = std::getenv("OYSTER_DEBUG_PRELOAD") != nullptr;
+        if (debugPreload)
+            std::fprintf(stderr, "frame %llu preload mesh %zu of %p: %.2f MB\n", static_cast<unsigned long long>(frame_), mi,
+                         static_cast<const void*>(model.get()), static_cast<double>(b) / 1048576.0);
+        bytes += b;
+        any = true;
+    }
+    return any;
+}
+
+Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
+    InstanceMeshes& im = meshes_[inst.id()];
+    if (im.meshes.empty()) {
+        im.meshes.resize(inst.model().meshes.size());
+        im.geometry = &inst.model();
+        ++sharedGeometry(inst.geometry()).users;
+    }
+    GpuMesh& g = im.meshes[mi];
+    if (g.vao) return g;
+    SharedGeometry& sg = geometry_[im.geometry];
+    StaticMesh& sm = sg.meshes[mi];
+    uploadStatic(inst.model(), sm, mi);
+    g.vertexCount = inst.model().meshes[mi].vertices.count;
+    glGenVertexArrays(1, &g.vao);
+    bindVao(g.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, sm.vbo);
+    for (GLuint slot = 0; slot < 10; ++slot) {
+        if (!sm.has[slot]) continue;
+        glEnableVertexAttribArray(slot);
+        glVertexAttribPointer(slot, kSlotComps[slot], GL_FLOAT, GL_FALSE, 0, reinterpret_cast<const void*>(sm.offset[slot]));
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sm.ibo);
     return g;
 }
 

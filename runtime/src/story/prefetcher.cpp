@@ -66,16 +66,27 @@ void Prefetcher::readyFiles(std::vector<std::string>& out, size_t max) const {
     }
 }
 
+void Prefetcher::readyModels(std::vector<std::shared_ptr<const ModelResource>>& out) const {
+    std::lock_guard<std::mutex> lock(m_);
+    for (const auto& kv : entries_) {
+        const Entry& e = *kv.second;
+        if (e.kind == Kind::Model && e.done && !e.failed && e.model) out.push_back(e.model);
+    }
+}
+
 std::shared_ptr<Prefetcher::Entry> Prefetcher::takeEntry(Kind kind, const std::string& uriIn) {
     Key key{static_cast<int>(kind), PackageFS::normalize(uriIn)};
     std::unique_lock<std::mutex> lock(m_);
+    lastTakeWaited = false;
     auto it = entries_.find(key);
     if (it == entries_.end()) return nullptr;
     std::shared_ptr<Entry> e = it->second;
     if (!e->done) {
         auto t0 = std::chrono::steady_clock::now();
         doneCv_.wait(lock, [&] { return e->done; });
-        waitedMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        waitedMs += ms;
+        lastTakeWaited = ms > 2.0;
     }
     entries_.erase(key);
     return e;

@@ -75,6 +75,10 @@ public:
                    const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
+    // Uploads the static vertex/index buffers of a model's meshes ahead of use (models the
+    // prefetcher has loaded for coming states), at most about `maxBytes`; false when nothing
+    // was left to upload.
+    bool preloadGeometry(const std::shared_ptr<const ModelResource>& model, size_t maxBytes, size_t maxMeshes);
     bool hasTexture(const std::string& uri) const { return textures_.count(uri) != 0; }
     // optional source of texture file bytes that were read ahead (story::Prefetcher)
     std::function<bool(const std::string&, std::vector<uint8_t>&)> fileSource;
@@ -143,15 +147,41 @@ private:
     static uint64_t sortKey(const MaterialPass& pass, float depth);
     void executeDraw(const DrawItem& d, const ViewParams& vp, const LightBlock& lb);
     void drawParticles(const SceneItem& it, const ViewParams& vp);
+    // Static vertex/index buffers of a mesh, shared by every instance of the model: all attribute
+    // arrays one after another in one buffer (the driver's cost is per buffer, not per byte).
+    struct StaticMesh {
+        GLuint vbo = 0, ibo = 0;
+        size_t offset[10] = {};  // per attribute slot
+        bool has[10] = {};
+        bool uploaded = false;
+    };
+    struct SharedGeometry {
+        std::shared_ptr<const ModelResource> model;  // keeps the key address valid
+        std::vector<StaticMesh> meshes;
+        int users = 0;          // instances drawing it
+        double idleSince = 0;   // seconds (steady clock) since users dropped to 0
+    };
+    // Per instance and mesh: the vertex array (static buffers + the instance's animated ones).
     struct GpuMesh {
-        GLuint vao = 0, ibo = 0;
-        GLuint vbo[10] = {};  // per attribute slot
+        GLuint vao = 0;
         GLuint dynPos = 0, dynNrm = 0;
         uint64_t revision = ~0ull;
         uint32_t vertexCount = 0;
     };
+    struct InstanceMeshes {
+        const ModelResource* geometry = nullptr;
+        std::vector<GpuMesh> meshes;
+    };
     GpuMesh& gpuMesh(const ModelInstance& inst, size_t meshIndex);
-    static void freeMesh(GpuMesh& g);
+    SharedGeometry& sharedGeometry(const std::shared_ptr<const ModelResource>& model);
+    size_t uploadStatic(const ModelResource& model, StaticMesh& sm, size_t meshIndex);  // bytes
+    void freeMesh(GpuMesh& g);
+    void freeStatic(StaticMesh& sm);
+    void expireGeometry();
+    // Buffers and vertex arrays are deleted in batches at frame start (one call, at most `max`
+    // names): deleting thousands one by one at a shot change cost the driver tens of ms.
+    void flushDeletes(size_t max);
+    std::vector<GLuint> deadBuffers_, deadVaos_;
     void applyRenderState(const RenderState& s);
     void useProgram(GLuint id);
     void bindVao(GLuint vao) {
@@ -225,7 +255,8 @@ private:
     GLuint particleVao_ = 0, particleVbo_ = 0, particleIbo_ = 0;
     std::vector<float> particleVerts_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;
-    std::unordered_map<uint64_t, std::vector<GpuMesh>> meshes_;  // ModelInstance::id -> per mesh
+    std::unordered_map<uint64_t, InstanceMeshes> meshes_;  // ModelInstance::id -> per mesh
+    std::unordered_map<const ModelResource*, SharedGeometry> geometry_;
     struct MeshBounds {  // local bounds of a mesh's current vertices (sort depth)
         uint64_t revision = ~0ull;
         bool animated = false;

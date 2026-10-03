@@ -408,6 +408,7 @@ void startEngine(App& a) {
         opt.msaa = 2;  // the Steam build's -msaa 2
         opt.precompileShaders = false;  // done frame by frame with an overlay (warm-up), see frame()
         opt.shaderCacheDir = files + "/shadercache";
+        opt.prefetchHints = root + "/../prefetch_hints.txt";  // learned prefetch, next to the data
         std::filesystem::create_directories(opt.shaderCacheDir);
         a.engine = std::make_unique<story::Engine>(*a.fs, opt);
         story::HmdState& h = a.engine->hmd();

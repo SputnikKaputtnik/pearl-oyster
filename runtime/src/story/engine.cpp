@@ -117,8 +117,14 @@ Engine::Engine(const PackageFS& fs, const EngineOptions& opt) : fs_(fs), opt_(op
     renderer_->setShaderCache(opt.shaderCacheDir);
     prefetch_ = std::make_unique<Prefetcher>(fs, 2);
     renderer_->fileSource = [this](const std::string& uri, std::vector<uint8_t>& bytes) {
-        return prefetch_->takeFile(uri, bytes);
+        if (prefetch_->takeFile(uri, bytes)) {
+            if (prefetch_->lastTakeWaited) recordHint(Prefetcher::Kind::File, uri);
+            return true;
+        }
+        recordHint(Prefetcher::Kind::File, uri);
+        return false;
     };
+    loadHints();
     audio_ = std::make_unique<audio::Engine>();
     width_ = opt.width;
     height_ = opt.height;
@@ -255,6 +261,7 @@ bool Engine::frame(double dtSeconds) {
     bool ok = lua_->callApplication("onUpdate");
     if (timingOn()) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
     ok = lua_->callApplication("onRender") && ok;
+    trackStates();
     if (!skipRender) preloadTextures();
     ++frameIndex;
     if (timingOn()) {
@@ -287,12 +294,15 @@ bool Engine::frame(double dtSeconds) {
     return ok;
 }
 
-// Textures of the models the prefetcher has read for coming states go to the GPU a few per frame
-// before they are needed, instead of all at once in the first frame of the next shot (the
-// render thread would spend tens of milliseconds in the driver there). Same data, same result.
+// Textures and mesh buffers of the models the prefetcher has loaded for coming states go to the
+// GPU a few per frame before they are needed, instead of all at once in the first frame of the
+// next shot (the render thread would spend tens of milliseconds in the driver there). Same data,
+// same result.
 void Engine::preloadTextures() {
     constexpr size_t kPerFrame = 3;
     constexpr double kBudgetMs = 2.0;
+    constexpr size_t kGeometryBytes = size_t(4) << 20;
+    constexpr size_t kGeometryMeshes = 48;  // the driver's cost is per buffer
     std::vector<std::string> ready;
     prefetch_->readyFiles(ready, 64);
     double t0 = nowMs();
@@ -304,7 +314,70 @@ void Engine::preloadTextures() {
         }
         renderer_->texture(uri);
         ++texturesPreloaded;
-        if (++n >= kPerFrame || nowMs() - t0 > kBudgetMs) break;
+        if (++n >= kPerFrame || nowMs() - t0 > kBudgetMs) return;
+    }
+    std::vector<std::shared_ptr<const ModelResource>> models;
+    prefetch_->readyModels(models);
+    for (const auto& m : models) {
+        if (nowMs() - t0 > kBudgetMs) return;
+        if (renderer_->preloadGeometry(m, kGeometryBytes, kGeometryMeshes)) return;  // one model's share per frame
+    }
+}
+
+// Learned prefetch. Hint file lines: <state>\t<kind>\t<uri> - entering <state> requests the
+// resource (it was loaded on demand within the next two states of an earlier run).
+void Engine::loadHints() {
+    if (opt_.prefetchHints.empty()) return;
+    std::FILE* f = std::fopen(opt_.prefetchHints.c_str(), "rb");
+    if (!f) return;
+    char line[2048];
+    size_t n = 0;
+    while (std::fgets(line, sizeof(line), f)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        size_t t1 = l.find('\t'), t2 = t1 == std::string::npos ? t1 : l.find('\t', t1 + 1);
+        if (t2 == std::string::npos || !hintLines_.insert(l).second) continue;
+        int kind = std::atoi(l.substr(t1 + 1, t2 - t1 - 1).c_str());
+        if (kind < 0 || kind > 3) continue;
+        hints_[l.substr(0, t1)].emplace_back(static_cast<Prefetcher::Kind>(kind), l.substr(t2 + 1));
+        ++n;
+    }
+    std::fclose(f);
+    std::fprintf(stderr, "prefetch hints: %zu from %s\n", n, opt_.prefetchHints.c_str());
+}
+
+// Story states from the FSM transition log ("[old]->[new]"); entering a state requests its hints.
+void Engine::trackStates() {
+    const auto& log = lua_->log;
+    for (; logSeen_ < log.size(); ++logSeen_) {
+        const std::string& l = log[logSeen_];
+        size_t arrow = l.find("]->[");
+        if (arrow == std::string::npos) continue;
+        size_t end = l.find(']', arrow + 4);
+        if (end == std::string::npos) continue;
+        std::string dest = l.substr(arrow + 4, end - arrow - 4);
+        if (dest == state_[0]) continue;
+        state_[2] = state_[1];
+        state_[1] = state_[0];
+        state_[0] = dest;
+        auto h = hints_.find(dest);
+        if (h != hints_.end())
+            for (const auto& kv : h->second) prefetch_->request(kv.first, kv.second);
+    }
+}
+
+void Engine::recordHint(Prefetcher::Kind kind, const std::string& uri) {
+    if (opt_.prefetchHints.empty()) return;
+    trackStates();  // a transition logged earlier in this frame
+    for (int k = 1; k <= 2; ++k) {
+        if (state_[k].empty()) continue;
+        std::string l = state_[k] + "\t" + std::to_string(static_cast<int>(kind)) + "\t" + uri;
+        if (!hintLines_.insert(l).second) continue;
+        hints_[state_[k]].emplace_back(kind, uri);
+        if (std::FILE* f = std::fopen(opt_.prefetchHints.c_str(), "ab")) {
+            std::fprintf(f, "%s\n", l.c_str());
+            std::fclose(f);
+        }
     }
 }
 
@@ -345,11 +418,13 @@ std::shared_ptr<const audio::PcmClip> Engine::audioClip(const std::string& uri) 
     LoadTimer lt(2);
     bool found = false;
     c = prefetch_->takeAudio(uri, found);
+    if (found && prefetch_->lastTakeWaited) recordHint(Prefetcher::Kind::Audio, uri);
     if (found) {
         clips_[uri] = c;
         return c;
     }
     try {
+        recordHint(Prefetcher::Kind::Audio, uri);
         c = audio::decodeVorbis(fs_.read(uri));
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "audio %s: %s\n", uri.c_str(), ex.what());
@@ -373,7 +448,11 @@ std::shared_ptr<ModelResource> Engine::model(const std::string& uri) {
     LoadTimer lt(0);
     bool found = false;
     std::shared_ptr<ModelResource> m = prefetch_->takeModel(uri, found);
-    if (!found) m = loadModel(fs_.read(uri));
+    if (found && prefetch_->lastTakeWaited) recordHint(Prefetcher::Kind::Model, uri);
+    if (!found) {
+        recordHint(Prefetcher::Kind::Model, uri);
+        m = loadModel(fs_.read(uri));
+    }
     models_[uri] = m;
     return m;
 }
@@ -384,7 +463,11 @@ std::shared_ptr<AnimResource> Engine::anim(const std::string& uri) {
     LoadTimer lt(1);
     bool found = false;
     std::shared_ptr<AnimResource> a = prefetch_->takeAnim(uri, found);
-    if (!found) a = loadAnim(fs_.read(uri));
+    if (found && prefetch_->lastTakeWaited) recordHint(Prefetcher::Kind::Anim, uri);
+    if (!found) {
+        recordHint(Prefetcher::Kind::Anim, uri);
+        a = loadAnim(fs_.read(uri));
+    }
     anims_[uri] = a;
     return a;
 }

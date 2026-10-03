@@ -8,6 +8,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "assets/anim.h"
@@ -192,6 +194,10 @@ struct EngineOptions {
     int msaa = 2;
     std::string shaderCacheDir;      // program binary cache (empty: none)
     bool precompileShaders = false;  // build every shader of the package at boot
+    // Learned prefetch (empty: off): resources the story loads without announcing them in a
+    // ResourceGroup are recorded with the story states that preceded the load; later runs
+    // prefetch them when those states are entered. Text file, written next to the data.
+    std::string prefetchHints;
 };
 
 class Engine {
@@ -268,6 +274,14 @@ public:
     Prefetcher& prefetcher() { return *prefetch_; }
 private:
     std::unique_ptr<Prefetcher> prefetch_;
+    // learned prefetch (EngineOptions::prefetchHints)
+    void trackStates();
+    void recordHint(Prefetcher::Kind kind, const std::string& uri);
+    void loadHints();
+    std::string state_[3];  // story state entered last, the one before, the one before that
+    size_t logSeen_ = 0;
+    std::unordered_map<std::string, std::vector<std::pair<Prefetcher::Kind, std::string>>> hints_;
+    std::unordered_set<std::string> hintLines_;
     std::map<std::string, std::shared_ptr<const audio::PcmClip>> clips_;
     std::map<std::string, std::shared_ptr<const ParticleSystemResource>> particleSystems_;
     bool hrtfLoaded_ = false;

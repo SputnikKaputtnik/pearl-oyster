@@ -41,8 +41,11 @@ public:
     size_t pending() const;
     // Texture files read ahead and not taken yet (URIs as requested), at most `max`.
     void readyFiles(std::vector<std::string>& out, size_t max) const;
+    // Models loaded ahead and not taken yet (shared: the engine takes the same object later).
+    void readyModels(std::vector<std::shared_ptr<const ModelResource>>& out) const;
     void expire(double maxAgeSeconds);  // forget finished results nobody took
     double waitedMs = 0;  // main-thread time spent waiting for unfinished loads
+    bool lastTakeWaited = false;  // the last take* had to wait (requested too late) - learned prefetch
 
 private:
     struct Entry {

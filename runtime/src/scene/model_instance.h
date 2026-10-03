@@ -29,6 +29,7 @@ public:
     ModelInstance(std::shared_ptr<const ModelResource> geometry, std::vector<Material> materials);
 
     const ModelResource& model() const { return *geom_; }
+    const std::shared_ptr<const ModelResource>& geometry() const { return geom_; }
     uint64_t id() const { return id_; }  // unique per instance (GPU caches; addresses get reused)
     const std::vector<Material>& materials() const { return materials_; }
 

@@ -150,6 +150,7 @@ int main(int argc, char** argv) {
         opt.width = args.w;
         opt.height = args.h;
         opt.msaa = args.msaa;
+        opt.prefetchHints = "prefetch_hints.txt";  // working directory (never the installation)
         opt.policy = args.remaster ? SamplingPolicy::remaster() : SamplingPolicy::original();
         story::Engine engine(fs, opt);
         // Emulated HMD (set before boot: the camera rig asks DisplayDevice.getType on creation):

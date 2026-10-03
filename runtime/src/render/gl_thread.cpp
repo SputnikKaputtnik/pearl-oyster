@@ -18,6 +18,10 @@
 
 #include "render/gl.h"
 
+#if defined(__ANDROID__) || defined(__linux__)
+#include <dlfcn.h>
+#endif
+
 namespace oyster::gl::threaded {
 namespace {
 
@@ -99,7 +103,28 @@ uint8_t* alloc(Replay fn, size_t argBytes) {
     return p + kHeader;
 }
 
+// OYSTER_DEBUG_GLSLOW=<ms>: report replayed commands slower than that (replay function as an
+// offset into its module, for llvm-symbolizer)
+void reportSlow(Replay fn, double ms) {
+    const void* addr = reinterpret_cast<const void*>(fn);
+#if defined(__ANDROID__) || defined(__linux__)
+    Dl_info info{};
+    if (dladdr(addr, &info) && info.dli_fbase) {
+        std::fprintf(stderr, "gl slow: %.1f ms in %s+0x%zx\n", ms, info.dli_fname ? info.dli_fname : "?",
+                     static_cast<size_t>(static_cast<const char*>(addr) - static_cast<const char*>(info.dli_fbase)));
+        return;
+    }
+#endif
+    std::fprintf(stderr, "gl slow: %.1f ms in %p\n", ms, addr);
+}
+
 void replayBatch(const Batch& b) {
+    static const double slowMs = [] {
+        const char* e = std::getenv("OYSTER_DEBUG_GLSLOW");
+        return e ? std::atof(e) : 0.0;
+    }();
+    std::map<Replay, std::pair<int, double>> perFn;  // debug: count and time per command kind
+    double batch0 = slowMs > 0 ? nowMs() : 0;
     size_t off = 0;
     while (off < b.used) {
         const uint8_t* p = b.buf.data() + off;
@@ -107,8 +132,28 @@ void replayBatch(const Batch& b) {
         std::memcpy(&fn, p, sizeof(fn));
         uint32_t n;
         std::memcpy(&n, p + 8, 4);
-        fn(p + kHeader);
+        if (slowMs > 0) {
+            double t0 = nowMs();
+            fn(p + kHeader);
+            double ms = nowMs() - t0;
+            if (ms > slowMs) reportSlow(fn, ms);
+            auto& pf = perFn[fn];
+            ++pf.first;
+            pf.second += ms;
+        } else {
+            fn(p + kHeader);
+        }
         off += n;
+    }
+    if (slowMs > 0 && nowMs() - batch0 > 30.0) {
+        std::vector<std::pair<double, Replay>> top;
+        for (const auto& kv : perFn) top.push_back({kv.second.second, kv.first});
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& c) { return a.first > c.first; });
+        std::fprintf(stderr, "gl slow batch: %.1f ms, %zu bytes\n", nowMs() - batch0, b.used);
+        for (size_t i = 0; i < top.size() && i < 6; ++i) {
+            std::fprintf(stderr, "  %d calls ", perFn[top[i].second].first);
+            reportSlow(top[i].second, top[i].first);
+        }
     }
 }
 

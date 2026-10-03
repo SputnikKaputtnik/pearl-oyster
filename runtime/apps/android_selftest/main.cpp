@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
         opt.msaa = msaa;
         opt.precompileShaders = true;
         opt.shaderCacheDir = "shadercache";  // relative to the working directory
+        opt.prefetchHints = root + "/../prefetch_hints.txt";  // shared with the app (next to the data)
         mkdir("shadercache", 0755);
         story::Engine engine(fs, opt);
         story::HmdState& h = engine.hmd();
@@ -156,7 +157,12 @@ int main(int argc, char** argv) {
             gl::threaded::Stats tsBefore = gl::threaded::stats();
             double f0 = nowMs();
             RenderStat* rs = &rstat[static_cast<size_t>(i)];
-            if (threaded) gl::threaded::enqueue([rs] { rs->start = nowMs(); });
+            static const bool markFrames = std::getenv("OYSTER_DEBUG_GLSLOW") != nullptr;
+            if (threaded)
+                gl::threaded::enqueue([rs, i] {
+                    rs->start = nowMs();
+                    if (markFrames) std::fprintf(stderr, "render frame %d\n", i);
+                });
             if (!engine.frame(0)) std::printf("frame %d: Lua error\n", i);
             double f1 = nowMs();
             gl::threaded::Stats tsAfter = gl::threaded::stats();
@@ -233,6 +239,9 @@ int main(int argc, char** argv) {
                 StateStat& st = states[static_cast<size_t>(frameState[f])];
                 st.render += rstat[f].replay;
                 st.gpu += rstat[f].gpuWait;
+                if (rstat[f].replay + rstat[f].gpuWait > 2 * budget)
+                    std::printf("render thread frame %zu: replay %.1f ms, GPU wait %.1f ms\n", f, rstat[f].replay,
+                                rstat[f].gpuWait);
             }
             std::printf("\n%-34s %7s %8s %9s %8s %9s %9s %6s\n", "state", "frames", "main ms", "render ms", "GPU ms",
                         "frame ms", "max ms", "over");
