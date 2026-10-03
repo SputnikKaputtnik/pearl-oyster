@@ -394,6 +394,7 @@ void frame(App& a) {
                 const RenderTarget* src = a.engine->eyeOutput(e);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.fbos[idx]);
                 if (a.srgbWriteControl) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+                glDisable(GL_SCISSOR_TEST);  // blits honour the scissor test
                 if (src) {
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
                     glBlitFramebuffer(0, 0, src->width, src->height, 0, 0, s.width, s.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);

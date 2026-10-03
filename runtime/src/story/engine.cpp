@@ -1,5 +1,7 @@
 #include "story/engine.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -189,6 +191,19 @@ end)lua", "=oyster.taskerrors");
     return lua_->callApplication("onReshape", {static_cast<double>(width_), static_cast<double>(height_)});
 }
 
+// OYSTER_DEBUG_TIMING: average CPU time per frame of the main phases, every 300 frames
+namespace {
+struct PhaseTimer {
+    const char* name;
+    double total = 0;
+};
+PhaseTimer gPhases[] = {{"lua update (excl. scene)"}, {"actors"}, {"particles+hooks"}, {"draw: collect"}, {"draw: graphs"}};
+double nowMs() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+const bool kTiming = std::getenv("OYSTER_DEBUG_TIMING") != nullptr;
+}  // namespace
+
 bool Engine::frame(double dtSeconds) {
     int64_t dt = time_.fixedStepMs > 0 ? static_cast<int64_t>(std::llround(time_.fixedStepMs * 1000.0))
                                        : static_cast<int64_t>(std::llround(dtSeconds * 1e6));
@@ -196,9 +211,27 @@ bool Engine::frame(double dtSeconds) {
     dt = static_cast<int64_t>(static_cast<double>(dt) * time_.scale);
     time_.dtUs = dt;
     time_.elapsedUs += dt;
+    double t0 = kTiming ? nowMs() : 0;
+    double sceneBefore = kTiming ? gPhases[1].total + gPhases[2].total : 0;
     bool ok = lua_->callApplication("onUpdate");
+    if (kTiming) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
     ok = lua_->callApplication("onRender") && ok;
     ++frameIndex;
+    if (kTiming && frameIndex % 300 == 0) {
+        std::string line = "timing/frame:";
+        for (auto& ph : gPhases) {
+            char b[96];
+            std::snprintf(b, sizeof(b), "  %s %.2f ms", ph.name, ph.total / 300.0);
+            line += b;
+            ph.total = 0;
+        }
+        std::fprintf(stderr, "%s  draw calls %zu  [scene prepare %.2f ms, execute %.2f ms, uploads %.2f ms %.2f MB]\n",
+                     line.c_str(), renderer_->drawCalls(), renderer_->prepareMs / 300.0, renderer_->executeMs / 300.0,
+                     renderer_->uploadMs / 300.0, static_cast<double>(renderer_->uploadBytes) / 300.0 / 1048576.0);
+        renderer_->uploadMs = 0;
+        renderer_->uploadBytes = 0;
+        renderer_->prepareMs = renderer_->executeMs = 0;
+    }
     return ok;
 }
 
@@ -429,12 +462,15 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
     std::vector<SGNode*> nodes = scene->nodes;
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onUpdate");
+    double ta = kTiming ? nowMs() : 0;
     for (SGNode* n : nodes)
         if (n->alive && (n->kind == SGNode::Kind::Actor || n->kind == SGNode::Kind::RenderGraphInstance))
         {
             updateActor(static_cast<ActorNode*>(n), dt);
             if (static_cast<ActorNode*>(n)->inst) applyAttachedLights(static_cast<ActorNode*>(n));
         }
+    double tb = kTiming ? nowMs() : 0;
+    if (kTiming) gPhases[1].total += tb - ta;
     // SGParticleEmitter::internalUpdate: global dt (us) x 1e-6 x the emitter's time scale, after
     // the actors have posed the bones the emitters hang on
     for (SGNode* n : nodes) {
@@ -450,6 +486,7 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
     }
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onLateUpdate");
+    if (kTiming) gPhases[2].total += nowMs() - tb;
     // deferred deletes
     std::vector<SGNode*> dead;
     dead.swap(pendingDelete_);
@@ -517,6 +554,7 @@ const RenderTarget* Engine::eyeOutput(int eye) const {
 
 void Engine::draw() {
     if (!activeGraph_ || !activeGraph_->graph) return;
+    double td0 = kTiming ? nowMs() : 0;
     for (auto* g : graphs)
         if (g != activeGraph_) {
             if (g->graph) g->graph->release();
@@ -606,6 +644,14 @@ void Engine::draw() {
                          l->color[2], l->wrap, l->viewFlags, dir.x, dir.y, dir.z, l->parentBone);
         }
     }
+    double td1 = kTiming ? nowMs() : 0;
+    if (kTiming) gPhases[3].total += td1 - td0;
+    struct GraphTimer {
+        double t0;
+        ~GraphTimer() {
+            if (kTiming) gPhases[4].total += nowMs() - t0;
+        }
+    } graphTimer{td1};
     renderer_->beginFrame();
     renderer_->resetStats();
     static const bool debugTexMem = std::getenv("OYSTER_DEBUG_TEXMEM") != nullptr;

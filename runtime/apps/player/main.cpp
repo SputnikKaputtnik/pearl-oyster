@@ -288,6 +288,7 @@ print(s))lua", "=status");
                     writeTGA(name, w * 2, h, px);
                 }
                 if (args.window && e0 && e1) {
+                    glDisable(GL_SCISSOR_TEST);
                     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, e0->fbo);
                     glBlitFramebuffer(0, 0, e0->width, e0->height, 0, 0, args.w / 2, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
@@ -309,6 +310,7 @@ print(s))lua", "=status");
                 writeTGA(name, out->width, out->height, px);
             }
             if (args.window && out) {
+                glDisable(GL_SCISSOR_TEST);
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, out->fbo);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 glBlitFramebuffer(0, 0, out->width, out->height, 0, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);

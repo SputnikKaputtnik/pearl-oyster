@@ -82,6 +82,8 @@ public:
     uint64_t frameCounter() const { return frame_; }
     void releaseInstance(uint64_t instanceId);  // frees the GPU buffers of a destroyed instance
     size_t drawCalls() const { return drawCalls_; }
+    double prepareMs = 0, executeMs = 0, imageMs = 0, uploadMs = 0;  // CPU time split (accumulated, Engine timing)
+    size_t uploadBytes = 0;
     void resetStats() { drawCalls_ = 0; }
     std::vector<std::string> warnings;
 
@@ -119,6 +121,44 @@ private:
     GpuMesh& gpuMesh(const ModelInstance& inst, size_t meshIndex);
     static void freeMesh(GpuMesh& g);
     void applyRenderState(const RenderState& s);
+    void useProgram(GLuint id);
+    struct TexUse;
+    // Per (instance, mesh, submesh, pass): everything executeDraw would otherwise look up by name
+    // on every draw - program, uniform locations, texture objects, which parameters animation
+    // channels may override. Texture objects are re-resolved after an eviction (texGen_).
+    struct PassCache {
+        Program* prog = nullptr;
+        uint64_t texGen = ~0ull;
+        struct Param {
+            GLint loc = -1;
+            bool texture = false;
+            int n = 0;          // float count of a constant
+            int unit = 0;
+            bool bound = false;  // Material::getParameter binds this pass (animated overrides)
+            GLuint tex = 0;
+            TexUse* use = nullptr;
+            const MaterialParam* src = nullptr;
+        };
+        std::vector<Param> params;
+        struct Sem {
+            GLint loc;
+            uint16_t semantic;
+            int unit;
+            const ShaderUniform* u;
+        };
+        std::vector<Sem> sems;
+    };
+    struct PassKey {
+        uint64_t inst;
+        uint32_t mesh, sub, pass;
+        bool operator==(const PassKey& o) const { return inst == o.inst && mesh == o.mesh && sub == o.sub && pass == o.pass; }
+    };
+    struct PassKeyHash {
+        size_t operator()(const PassKey& k) const {
+            return std::hash<uint64_t>()(k.inst * 0x9E3779B97F4A7C15ull ^ (uint64_t(k.mesh) << 32 | uint64_t(k.sub) << 8 | k.pass));
+        }
+    };
+    PassCache& passCache(const DrawItem& d, const MaterialPass& pass, const Material& mat);
     void warnOnce(const std::string& w);
 
     const PackageFS& fs_;
@@ -132,10 +172,21 @@ private:
     size_t texBytes_ = 0, texBudget_ = 0;
     uint32_t texMinIdle_ = 90;
     uint64_t frame_ = 0;
+    uint64_t texGen_ = 0;
+    std::unordered_map<PassKey, PassCache, PassKeyHash> passCache_;
+    GLuint curProgram_ = 0;
+    bool stateValid_ = false;
+    RenderState curState_;
     GLuint particleVao_ = 0, particleVbo_ = 0, particleIbo_ = 0;
     std::vector<float> particleVerts_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;
     std::map<std::pair<uint64_t, size_t>, GpuMesh> meshes_;  // (ModelInstance::id, mesh)
+    struct MeshBounds {  // local bounds of a mesh's current vertices (sort depth)
+        uint64_t revision = ~0ull;
+        bool animated = false;
+        Vec3 lo, hi;
+    };
+    std::map<std::pair<uint64_t, size_t>, MeshBounds> bounds_;
     std::map<std::string, bool> warned_;
     size_t drawCalls_ = 0;
     GLuint white_ = 0;

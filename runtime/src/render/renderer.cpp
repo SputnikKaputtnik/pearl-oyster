@@ -1,6 +1,7 @@
 #include "render/renderer.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -138,6 +139,10 @@ void Renderer::freeMesh(GpuMesh& g) {
 }
 
 void Renderer::releaseInstance(uint64_t instanceId) {
+    for (auto pc = passCache_.begin(); pc != passCache_.end();)
+        pc = pc->first.inst == instanceId ? passCache_.erase(pc) : std::next(pc);
+    for (auto b = bounds_.lower_bound({instanceId, 0}); b != bounds_.end() && b->first.first == instanceId;)
+        b = bounds_.erase(b);
     auto it = meshes_.lower_bound({instanceId, 0});
     while (it != meshes_.end() && it->first.first == instanceId) {
         freeMesh(it->second);
@@ -154,6 +159,8 @@ void Renderer::warnOnce(const std::string& w) {
 
 void Renderer::beginFrame() {
     ++frame_;
+    stateValid_ = false;  // the platform layer may have changed GL state between frames
+    curProgram_ = 0;
     if (texBudget_ == 0 || texBytes_ <= texBudget_) return;
     std::vector<std::pair<uint64_t, std::string>> idle;
     for (const auto& kv : texUse_)
@@ -167,6 +174,7 @@ void Renderer::beginFrame() {
             textures_.erase(t);
         }
         texBytes_ -= texUse_[e.second].bytes;
+        ++texGen_;
         texUse_.erase(e.second);
     }
 }
@@ -303,7 +311,32 @@ Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
     return g;
 }
 
+namespace {
+bool sameState(const RenderState& a, const RenderState& b) {
+    return a.blend == b.blend && a.blendSrcRGB == b.blendSrcRGB && a.blendSrcAlpha == b.blendSrcAlpha &&
+           a.blendDstRGB == b.blendDstRGB && a.blendDstAlpha == b.blendDstAlpha &&
+           !std::memcmp(a.blendColor, b.blendColor, sizeof(a.blendColor)) && a.blendEqRGB == b.blendEqRGB &&
+           a.blendEqAlpha == b.blendEqAlpha && a.depthTest == b.depthTest && a.depthWrite == b.depthWrite &&
+           a.depthFunc == b.depthFunc && !std::memcmp(a.depthRange, b.depthRange, sizeof(a.depthRange)) &&
+           a.scissor == b.scissor && a.stencil == b.stencil && a.stencilMask == b.stencilMask &&
+           a.stencilFunc == b.stencilFunc && a.stencilRef == b.stencilRef && a.stencilReadMask == b.stencilReadMask &&
+           !std::memcmp(a.stencilOps, b.stencilOps, sizeof(a.stencilOps)) &&
+           !std::memcmp(a.colorMask, b.colorMask, sizeof(a.colorMask)) && a.cull == b.cull && a.cullFace == b.cullFace &&
+           a.polygonOffset == b.polygonOffset && a.polygonOffsetFactor == b.polygonOffsetFactor &&
+           a.polygonOffsetUnits == b.polygonOffsetUnits && a.dither == b.dither;
+}
+}  // namespace
+
+void Renderer::useProgram(GLuint id) {
+    if (id == curProgram_) return;
+    glUseProgram(id);
+    curProgram_ = id;
+}
+
 void Renderer::applyRenderState(const RenderState& s) {
+    if (stateValid_ && sameState(s, curState_)) return;
+    curState_ = s;
+    stateValid_ = true;
     auto en = [](GLenum cap, bool on) { on ? glEnable(cap) : glDisable(cap); };
     en(GL_BLEND, s.blend);
     glBlendFuncSeparate(glEnumFromIndex(s.blendSrcRGB), glEnumFromIndex(s.blendDstRGB), glEnumFromIndex(s.blendSrcAlpha),
@@ -346,7 +379,7 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
     }
-    glUseProgram(prog->id);
+    useProgram(prog->id);
     applyRenderState(pass.state);
     const auto& un = prog->meta.uniforms;
     for (const MaterialParam& p : pass.params) {
@@ -404,6 +437,7 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
 }
 
 void Renderer::clear(const float c[4]) {
+    stateValid_ = false;
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
     glStencilMask(0xFF);
@@ -451,7 +485,14 @@ uint64_t Renderer::sortKey(const MaterialPass& pass, float depth) {
            static_cast<uint64_t>(mid & 0x7FFF) << 15 | static_cast<uint64_t>(lo & 0x7FFF);
 }
 
+namespace {
+double cpuMs() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
 void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& vp) {
+    double t0 = cpuMs();
     std::vector<DrawItem> draws;
     uint32_t seq = 0;
     for (const SceneItem& it : items) {
@@ -501,12 +542,21 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
             const MeshState& ms = inst.meshState(mi);
             if (!ms.visible) continue;
             // sort depth: view-space distance of the transformed bounds' centre / far + mesh bias
-            const std::vector<float>& pos = (ms.animated && !ms.position.empty()) ? ms.position : mesh.vertices.position;
-            Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
-            for (size_t v = 0; v + 2 < pos.size(); v += 3) {
-                lo.x = std::min(lo.x, pos[v]); lo.y = std::min(lo.y, pos[v + 1]); lo.z = std::min(lo.z, pos[v + 2]);
-                hi.x = std::max(hi.x, pos[v]); hi.y = std::max(hi.y, pos[v + 1]); hi.z = std::max(hi.z, pos[v + 2]);
+            bool animatedPos = ms.animated && !ms.position.empty();
+            MeshBounds& mb = bounds_[{inst.id(), mi}];
+            if (mb.revision == ~0ull || mb.animated != animatedPos || (animatedPos && mb.revision != ms.revision)) {
+                const std::vector<float>& pos = animatedPos ? ms.position : mesh.vertices.position;
+                Vec3 blo(1e30f, 1e30f, 1e30f), bhi(-1e30f, -1e30f, -1e30f);
+                for (size_t v = 0; v + 2 < pos.size(); v += 3) {
+                    blo.x = std::min(blo.x, pos[v]); blo.y = std::min(blo.y, pos[v + 1]); blo.z = std::min(blo.z, pos[v + 2]);
+                    bhi.x = std::max(bhi.x, pos[v]); bhi.y = std::max(bhi.y, pos[v + 1]); bhi.z = std::max(bhi.z, pos[v + 2]);
+                }
+                mb.lo = blo;
+                mb.hi = bhi;
+                mb.animated = animatedPos;
+                mb.revision = animatedPos ? ms.revision : 0;
             }
+            const Vec3 lo = mb.lo, hi = mb.hi;
             Mat4 world = node < model.localXforms.size() ? inst.nodeWorld(node) : inst.root;
             Vec3 wlo(1e30f, 1e30f, 1e30f), whi(-1e30f, -1e30f, -1e30f);
             for (int c = 0; c < 8; ++c) {
@@ -542,7 +592,51 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
     std::stable_sort(draws.begin(), draws.end(), [](const DrawItem& a, const DrawItem& b) { return a.key < b.key; });
     LightBlock lb;
     lightBlock(vp, lb);
+    double t1 = cpuMs();
+    prepareMs += t1 - t0;
     for (const DrawItem& d : draws) executeDraw(d, vp, lb);
+    executeMs += cpuMs() - t1;
+}
+
+Renderer::PassCache& Renderer::passCache(const DrawItem& d, const MaterialPass& pass, const Material& mat) {
+    PassKey key{d.inst->id(), static_cast<uint32_t>(d.mesh), static_cast<uint32_t>(d.sub), static_cast<uint32_t>(d.pass)};
+    auto it = passCache_.find(key);
+    if (it != passCache_.end() && it->second.texGen == texGen_) return it->second;
+    PassCache& pc = passCache_[key];
+    pc = PassCache();
+    pc.texGen = texGen_;
+    pc.prog = program(pass.shader.uri);
+    if (!pc.prog || !pc.prog->ok) return pc;
+    const auto& un = pc.prog->meta.uniforms;
+    for (const MaterialParam& p : pass.params) {
+        if (p.uniformIndex >= un.size()) continue;
+        GLint loc = pc.prog->loc[p.uniformIndex];
+        if (loc < 0) continue;
+        PassCache::Param cp;
+        cp.loc = loc;
+        cp.src = &p;
+        if (p.type == 0) {
+            cp.n = static_cast<int>(std::min<size_t>(p.values.size(), 16));
+            // Material::getParameter binds the first pass that has the parameter
+            size_t boundPass = 0;
+            for (size_t q = 0; q < mat.passes.size(); ++q) {
+                bool has = false;
+                for (const MaterialParam& pp : mat.passes[q].params) has = has || pp.nameHash == p.nameHash;
+                if (has) { boundPass = q; break; }
+            }
+            cp.bound = boundPass == d.pass;
+        } else {
+            cp.texture = true;
+            cp.unit = un[p.uniformIndex].unit >= 0 ? un[p.uniformIndex].unit : 0;
+            cp.tex = texture(p.texture.uri);
+            auto u = texUse_.find(p.texture.uri);
+            cp.use = u != texUse_.end() ? &u->second : nullptr;
+        }
+        pc.params.push_back(cp);
+    }
+    for (size_t i = 0; i < un.size(); ++i)
+        if (pc.prog->loc[i] >= 0) pc.sems.push_back({pc.prog->loc[i], un[i].semantic, un[i].unit, &un[i]});
+    return pc;
 }
 
 void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightBlock& lb) {
@@ -565,6 +659,13 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
         if (ms.animated && ms.position.size() == 3ull * g.vertexCount) {
             if (!g.dynPos) { glGenBuffers(1, &g.dynPos); glGenBuffers(1, &g.dynNrm); }
             if (g.revision != ms.revision) {
+                double tu = cpuMs();
+                uploadBytes += (ms.position.size() + ms.normal.size()) * 4;
+                struct Done {
+                    double t;
+                    double& acc;
+                    ~Done() { acc += cpuMs() - t; }
+                } done{tu, uploadMs};
                 glBindBuffer(GL_ARRAY_BUFFER, g.dynPos);
                 glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(ms.position.size() * 4), ms.position.data(), GL_DYNAMIC_DRAW);
                 glBindBuffer(GL_ARRAY_BUFFER, g.dynNrm);
@@ -599,54 +700,43 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
         size_t passIndex = d.pass;
         const MaterialPass& pass = mat.passes[passIndex];
         {
-            Program* prog = program(pass.shader.uri);
+            (void)passIndex;
+            PassCache& pc = passCache(d, pass, mat);
+            Program* prog = pc.prog;
             if (!prog || !prog->ok) { glBindVertexArray(0); return; }
-            glUseProgram(prog->id);
+            useProgram(prog->id);
             applyRenderState(pass.state);
 
-            const auto& un = prog->meta.uniforms;
             // material parameters (with animated overrides from custom channels)
-            for (const MaterialParam& p : pass.params) {
-                if (p.uniformIndex >= un.size()) continue;
-                GLint loc = prog->loc[p.uniformIndex];
-                const ShaderUniform& u = un[p.uniformIndex];
-                if (loc < 0) continue;
-                if (p.type == 0) {
+            for (const PassCache::Param& cp : pc.params) {
+                if (!cp.texture) {
+                    const MaterialParam& p = *cp.src;
                     float v[16] = {};
-                    size_t n = std::min<size_t>(p.values.size(), 16);
-                    for (size_t i = 0; i < n; ++i) v[i] = p.values[i];
+                    for (int i = 0; i < cp.n; ++i) v[i] = p.values[static_cast<size_t>(i)];
                     float ov[4];
                     uint32_t mask = 0;
-                    // Material::getParameter binds the first pass that has the parameter
-                    size_t boundPass = 0;
-                    for (size_t q = 0; q < mat.passes.size(); ++q) {
-                        bool has = false;
-                        for (const MaterialParam& pp : mat.passes[q].params) has = has || pp.nameHash == p.nameHash;
-                        if (has) { boundPass = q; break; }
-                    }
-                    if (boundPass == passIndex && inst.materialOverride(mat.nameHash, p.nameHash, 0, ov, &mask))
+                    if (cp.bound && inst.materialOverride(mat.nameHash, p.nameHash, 0, ov, &mask))
                         for (int c = 0; c < 4; ++c) if (mask & (1u << c)) v[c] = ov[c];
-                    switch (n) {
-                        case 1: glUniform1fv(loc, 1, v); break;
-                        case 2: glUniform2fv(loc, 1, v); break;
-                        case 3: glUniform3fv(loc, 1, v); break;
-                        case 4: glUniform4fv(loc, 1, v); break;
-                        case 16: glUniformMatrix4fv(loc, 1, GL_FALSE, v); break;
-                        default: warnOnce("param size " + std::to_string(n) + " for " + u.name);
+                    switch (cp.n) {
+                        case 1: glUniform1fv(cp.loc, 1, v); break;
+                        case 2: glUniform2fv(cp.loc, 1, v); break;
+                        case 3: glUniform3fv(cp.loc, 1, v); break;
+                        case 4: glUniform4fv(cp.loc, 1, v); break;
+                        case 16: glUniformMatrix4fv(cp.loc, 1, GL_FALSE, v); break;
+                        default: warnOnce("param size " + std::to_string(cp.n));
                     }
                 } else {
-                    int unit = u.unit >= 0 ? u.unit : 0;
-                    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
-                    glBindTexture(GL_TEXTURE_2D, texture(p.texture.uri));
-                    glUniform1i(loc, unit);
+                    if (cp.use) cp.use->lastUse = frame_;
+                    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(cp.unit));
+                    glBindTexture(GL_TEXTURE_2D, cp.tex);
+                    glUniform1i(cp.loc, cp.unit);
                 }
             }
             // engine-supplied and global values
-            for (size_t i = 0; i < un.size(); ++i) {
-                GLint loc = prog->loc[i];
-                if (loc < 0) continue;
-                const ShaderUniform& u = un[i];
-                if (u.semantic == 0xFFFF) {
+            for (const PassCache::Sem& cs : pc.sems) {
+                GLint loc = cs.loc;
+                const ShaderUniform& u = *cs.u;
+                if (cs.semantic == 0xFFFF) {
                     if (u.cls >= 3) {
                         auto gs = vp.globalSamplers.find(u.name);
                         if (gs != vp.globalSamplers.end()) {
@@ -777,7 +867,7 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
         out += 48;
     }
 
-    glUseProgram(prog->id);
+    useProgram(prog->id);
     applyRenderState(pass.state);
     // material parameters; the diffuse texture also defines the flipbook geometry
     static const uint32_t kDiffuse = fnv1a("DiffuseMap");
