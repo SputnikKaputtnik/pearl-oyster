@@ -54,9 +54,39 @@ endif()
 # like msvcbuild.bat: all lj_*.c and lib_*.c (incl. lib_aux.c / lib_init.c)
 file(GLOB _lj_core "${_lj_src}/lj_*.c")
 file(GLOB _lj_libs "${_lj_src}/lib_*.c")
+
+# Table iteration order of the original (LuaJIT 2.0.4): 2.0 places string keys by their content
+# hash (seed-free lookup3 variant), 2.1 by an interned string id, randomised by default. Story
+# scripts iterate tables with pairs() (e.g. Story:findDef), so the order must be deterministic
+# and should equal the original's. A patched copy of lj_str.c (build dir only) sets the string
+# id to the 2.0 hash; the security randomisation is disabled. 2.1 is kept for ARM64 (Quest).
+option(OYSTER_LUAJIT20_TABLE_ORDER "LuaJIT 2.0 compatible, deterministic table order" ON)
+if(OYSTER_LUAJIT20_TABLE_ORDER)
+  file(READ "${_lj_src}/lj_str.c" _lj_str)
+  string(REPLACE "#ifndef STRID_RESEED_INTERVAL\n  s->sid = g->str.id++;"
+                 "#ifndef STRID_RESEED_INTERVAL\n  s->sid = (StrID)hash;  /* Oyster: LuaJIT 2.0 table order */\n  g->str.id++;"
+                 _lj_str "${_lj_str}")
+  string(REPLACE "g->str.seed = lj_prng_u64(&g->prng);"
+                 "(void)lj_prng_u64(&g->prng);\n  g->str.seed = 0;  /* Oyster: LuaJIT 2.0 string hash */"
+                 _lj_str "${_lj_str}")
+  string(FIND "${_lj_str}" "Oyster: LuaJIT 2.0 table order" _p1)
+  string(FIND "${_lj_str}" "Oyster: LuaJIT 2.0 string hash" _p2)
+  if(_p1 EQUAL -1 OR _p2 EQUAL -1)
+    message(FATAL_ERROR "lj_str.c changed upstream: LuaJIT 2.0 table order patch does not apply")
+  endif()
+  file(MAKE_DIRECTORY "${_lj_gen}/patched")
+  file(WRITE "${_lj_gen}/patched/lj_str.c" "${_lj_str}")
+  list(REMOVE_ITEM _lj_core "${_lj_src}/lj_str.c")
+  list(APPEND _lj_core "${_lj_gen}/patched/lj_str.c")
+endif()
+
 enable_language(C)
 add_library(luajit STATIC ${_lj_core} ${_lj_libs} "${_lj_vmobj}")
 # generated headers first (luajit.h, lj_*def.h), then the source tree
 target_include_directories(luajit BEFORE PUBLIC "${_lj_gen}" "${_lj_src}")
 target_compile_options(luajit PRIVATE -O2 -fomit-frame-pointer -w)
+if(OYSTER_LUAJIT20_TABLE_ORDER)
+  target_compile_definitions(luajit PRIVATE LUAJIT_SECURITY_PRNG=0 LUAJIT_SECURITY_STRHASH=0
+                                            LUAJIT_SECURITY_STRID=0)
+endif()
 set_source_files_properties("${_lj_vmobj}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)

@@ -35,6 +35,7 @@ struct Mesh {
     uint32_t u11c = 0, u120 = 0;
     std::vector<uint16_t> nodes;      // transform node(s) the mesh is attached to (Pearl: one)
     uint32_t instanceCount = 0;
+    std::vector<float> instances;     // per instance: scale(3), rotation xyzw(4), position(3)
     VertexData vertices;
     uint16_t boneGroup = 0xFFFF;      // index into ModelResource::boneGroups (skinned meshes)
     std::vector<Mat4> skinMatrices;   // per palette entry (inverse bind)

@@ -1,5 +1,6 @@
 #include "scene/model_instance.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <unordered_map>
@@ -42,6 +43,8 @@ void evaluateSubdiv(const SubdivSurface& s, const float* cp, const float* cn, st
 
 ModelInstance::ModelInstance(std::shared_ptr<const ModelResource> geometry, std::vector<Material> materials)
     : geom_(std::move(geometry)), materials_(std::move(materials)) {
+    static uint64_t nextId = 1;
+    id_ = nextId++;
     size_t n = geom_->localXforms.size();
     local_ = geom_->localXforms;
     world_.resize(n);
@@ -84,6 +87,7 @@ void ModelInstance::bindAnimation() {
         if (mesh < 0 || vm.chunks.size() < 2) continue;
         VanmBinding b;
         b.mesh = mesh;
+        b.node = node;
         b.vm = &vm;
         b.pos0 = std::make_unique<VanmDecoder>(&vm.chunks[0]);
         b.pos1 = std::make_unique<VanmDecoder>(&vm.chunks[0]);
@@ -107,6 +111,13 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
         const bool hasVanm = a.vertexAnim && !a.vertexAnim->meshes.empty();
         // animated values live in the instance's material copies (createMaterialInstance) and
         // keep their last value when a later clip has no channel for them: no clear here
+        if (hasVanm) {
+            // VertexAnimator::update: the whole pose visibility is cleared, then every bone with
+            // a vertex-animated mesh gets that mesh's visibility bit for the current frame
+            std::fill(nodeVisible_.begin(), nodeVisible_.end(), 0);
+            for (const auto& b : vanm_)
+                if (b.node >= 0) nodeVisible_[static_cast<size_t>(b.node)] = b.vm->visible(vanmFrame(*b.vm)) ? 1 : 0;
+        }
         for (size_t t = 0; t < a.tracks.size(); ++t) {
             const AnimTrack& tr = a.tracks[t];
             int node = trackNode_[t];
@@ -149,6 +160,14 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
         effVisible_[i] = v ? 1 : 0;
     }
     evaluateVertexAnim(policy);
+}
+
+uint32_t ModelInstance::vanmFrame(const VanmMesh& vm) const {
+    float f = anim_->time * static_cast<float>(anim_->fps) + static_cast<float>(anim_->start);
+    float last = static_cast<float>(vm.frames > 0 ? vm.frames - 1 : 0);
+    if (f > last) f = last;
+    if (f < 0) f = 0;
+    return static_cast<uint32_t>(std::floor(f));
 }
 
 void ModelInstance::evaluateVertexAnim(const SamplingPolicy& policy) {

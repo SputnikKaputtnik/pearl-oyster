@@ -28,6 +28,7 @@ struct Light {
 struct ViewParams {
     Mat4 view, proj;
     float aspect = 1.0f;
+    float screenSize[2] = {1, 1};  // u_screenSize: pixel size of the current render target
     float zfar = 1.0f;               // camera far plane (sort depth normalization)
     float time = 0.0f;
     int viewIndex = 0;
@@ -67,6 +68,7 @@ public:
                    const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
+    void releaseInstance(uint64_t instanceId);  // frees the GPU buffers of a destroyed instance
     size_t drawCalls() const { return drawCalls_; }
     void resetStats() { drawCalls_ = 0; }
     std::vector<std::string> warnings;
@@ -101,13 +103,14 @@ private:
         uint32_t vertexCount = 0;
     };
     GpuMesh& gpuMesh(const ModelInstance& inst, size_t meshIndex);
+    static void freeMesh(GpuMesh& g);
     void applyRenderState(const RenderState& s);
     void warnOnce(const std::string& w);
 
     const PackageFS& fs_;
     std::unordered_map<std::string, GLuint> textures_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;
-    std::map<std::pair<const void*, size_t>, GpuMesh> meshes_;
+    std::map<std::pair<uint64_t, size_t>, GpuMesh> meshes_;  // (ModelInstance::id, mesh)
     std::map<std::string, bool> warned_;
     size_t drawCalls_ = 0;
     GLuint white_ = 0;

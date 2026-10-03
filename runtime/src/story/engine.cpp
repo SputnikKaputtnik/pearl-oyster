@@ -309,6 +309,10 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
     }
     for (SGNode* n : dead) {
         if (n->luaComponents) callNodeHook(L, n, "__onDestroy");
+        if (n->kind == SGNode::Kind::Actor || n->kind == SGNode::Kind::RenderGraphInstance) {
+            auto* a = static_cast<ActorNode*>(n);
+            if (a->inst) renderer_->releaseInstance(a->inst->id());
+        }
         lua_->destroy(n->handle);
     }
 }

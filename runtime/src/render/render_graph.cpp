@@ -97,6 +97,8 @@ void RenderGraph::execute(Renderer& r, const std::vector<SceneItem>& items, cons
     for (auto& n : nodes_) {
         glBindFramebuffer(GL_FRAMEBUFFER, n.target.drawFbo());
         glViewport(0, 0, n.target.width, n.target.height);
+        vp.screenSize[0] = static_cast<float>(n.target.width);  // FUN_1801903f0 / FUN_1801a3b60
+        vp.screenSize[1] = static_cast<float>(n.target.height);
         if (n.scene) {
             r.clear(n.view.clear);
             vp.viewFlag = n.view.viewFlag;

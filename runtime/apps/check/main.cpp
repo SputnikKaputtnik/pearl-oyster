@@ -48,8 +48,9 @@ int main(int argc, char** argv) {
                 std::shared_ptr<ModelResource> m = loadModel(data);
                 for (const Mesh& me : m->meshes) {
                     ++meshes;
-                    verts += me.vertices.count;
-                    tris += me.indices.size() / 3;
+                    // stored (pre-instancing) counts, comparable with the Python tools
+                    verts += me.vertices.count / (me.instanceCount + 1);
+                    tris += me.indices.size() / 3 / (me.instanceCount + 1);
                     for (uint16_t ix : me.indices)
                         if (ix >= me.vertices.count) { ++idxBad; break; }
                     if (me.subdiv) {

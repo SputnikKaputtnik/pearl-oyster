@@ -118,16 +118,26 @@ Renderer::Renderer(const PackageFS& fs) : fs_(fs) {
 Renderer::~Renderer() {
     for (auto& kv : textures_) glDeleteTextures(1, &kv.second);
     for (auto& kv : programs_) if (kv.second->id) glDeleteProgram(kv.second->id);
-    for (auto& kv : meshes_) {
-        GpuMesh& g = kv.second;
-        glDeleteVertexArrays(1, &g.vao);
-        glDeleteBuffers(10, g.vbo);
-        glDeleteBuffers(1, &g.ibo);
-        if (g.dynPos) glDeleteBuffers(1, &g.dynPos);
-        if (g.dynNrm) glDeleteBuffers(1, &g.dynNrm);
-    }
+    for (auto& kv : meshes_) freeMesh(kv.second);
     glDeleteTextures(1, &white_);
     if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); glDeleteBuffers(1, &quadVbo_); }
+}
+
+void Renderer::freeMesh(GpuMesh& g) {
+    glDeleteVertexArrays(1, &g.vao);
+    glDeleteBuffers(10, g.vbo);
+    glDeleteBuffers(1, &g.ibo);
+    if (g.dynPos) glDeleteBuffers(1, &g.dynPos);
+    if (g.dynNrm) glDeleteBuffers(1, &g.dynNrm);
+    g = GpuMesh();
+}
+
+void Renderer::releaseInstance(uint64_t instanceId) {
+    auto it = meshes_.lower_bound({instanceId, 0});
+    while (it != meshes_.end() && it->first.first == instanceId) {
+        freeMesh(it->second);
+        it = meshes_.erase(it);
+    }
 }
 
 void Renderer::warnOnce(const std::string& w) {
@@ -206,7 +216,7 @@ Renderer::Program* Renderer::program(const std::string& uri) {
 }
 
 Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
-    auto key = std::make_pair(static_cast<const void*>(&inst), mi);
+    auto key = std::make_pair(inst.id(), mi);
     auto it = meshes_.find(key);
     if (it != meshes_.end()) return it->second;
     GpuMesh& g = meshes_[key];
@@ -323,6 +333,8 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
             glUniform2fv(loc, 8, texel);
         } else if (u.semantic == static_cast<uint16_t>(Semantic::AspectRatio)) {
             glUniform1fv(loc, 1, &vp.aspect);
+        } else if (u.semantic == static_cast<uint16_t>(Semantic::ScreenSize)) {
+            glUniform2fv(loc, 1, vp.screenSize);
         } else if (u.semantic == static_cast<uint16_t>(Semantic::ViewMid)) {
             const float mid[2] = {0, 0};  // [I] mono: view centre = 0
             glUniform2fv(loc, 1, mid);
@@ -574,6 +586,8 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                         break;
                     case Semantic::Time: glUniform1fv(loc, 1, &vp.time); break;
                     case Semantic::AspectRatio: glUniform1fv(loc, 1, &vp.aspect); break;
+                    case Semantic::ScreenSize: glUniform2fv(loc, 1, vp.screenSize); break;
+                    case Semantic::ViewMid: { const float mid[2] = {0, 0}; glUniform2fv(loc, 1, mid); break; }  // [I] mono
                     case Semantic::ViewIndex: glUniform1i(loc, vp.viewIndex); break;
                     case Semantic::LightCount: glUniform1i(loc, lightCount); break;
                     case Semantic::LightPosition: glUniform4fv(loc, 4, lpos); break;

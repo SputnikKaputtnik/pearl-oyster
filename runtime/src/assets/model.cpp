@@ -38,6 +38,76 @@ std::unique_ptr<SubdivSurface> readSubdiv(Reader& r) {  // SubdivSurface::read -
     return s;
 }
 
+// ModelResource::fixupMeshInstances (0x180145470): instances are baked into the buffers at load
+// time. Vertex copy k (1..I) = base vertices transformed by instance k-1 (positions by the
+// instance matrix, normals/tangents rotated by its quaternion), other attributes copied; each
+// submesh's indices are copied to start + N*k (+ n*k), then every submesh range and the index
+// count are multiplied by I+1 - with several submeshes the engine's ranges overlap the copies
+// of other submeshes; reproduced as is.
+void fixupMeshInstances(Mesh& m) {
+    const uint32_t I = m.instanceCount;
+    VertexData& v = m.vertices;
+    const uint32_t n = v.count;
+    if (I == 0 || n == 0) return;
+    const uint32_t total = n * (I + 1);
+    auto grow = [&](std::vector<float>& a, size_t comps) {
+        if (!a.empty()) a.resize(static_cast<size_t>(total) * comps);
+    };
+    grow(v.position, 3);
+    grow(v.normal, 3);
+    grow(v.tangent, 3);
+    grow(v.color, 4);
+    for (auto& uv : v.uv) grow(uv, 2);
+    grow(v.weights, 4);
+    grow(v.joints, 4);
+    for (uint32_t k = 1; k <= I; ++k) {
+        const float* t = &m.instances[static_cast<size_t>(k - 1) * 10];  // scale(3) quat(4) pos(3)
+        Mat4 M = Mat4::trs({t[7], t[8], t[9]}, Quat(t[3], t[4], t[5], t[6]), {t[0], t[1], t[2]});
+        const float qx = t[3], qy = t[4], qz = t[5], ww = t[6] + t[6];
+        for (uint32_t i = 0; i < n; ++i) {
+            const size_t s3 = static_cast<size_t>(i) * 3, d3 = (static_cast<size_t>(k) * n + i) * 3;
+            if (!v.position.empty()) {
+                const float x = v.position[s3], y = v.position[s3 + 1], z = v.position[s3 + 2];
+                v.position[d3] = y * M.m[1] + x * M.m[0] + z * M.m[2] + M.m[3];
+                v.position[d3 + 1] = x * M.m[4] + y * M.m[5] + z * M.m[6] + M.m[7];
+                v.position[d3 + 2] = x * M.m[8] + y * M.m[9] + z * M.m[10] + M.m[11];
+            }
+            for (std::vector<float>* vec : {&v.normal, &v.tangent}) {
+                if (vec->empty()) continue;
+                std::vector<float>& a = *vec;
+                const float x = a[s3], y = a[s3 + 1], z = a[s3 + 2];
+                // a = q x v (cz, cy, cx = a.x, a.y, a.z in the decompiled names' order)
+                const float cz = z * qy - y * qz, cy = x * qz - z * qx, cx = y * qx - x * qy;
+                a[d3] = cz * ww + x + (cx * qy - cy * qz) * 2.0f;
+                a[d3 + 1] = y + cy * ww + (cz * qz - cx * qx) * 2.0f;
+                a[d3 + 2] = z + cx * ww + (cy * qx - cz * qy) * 2.0f;
+            }
+            auto copy = [&](std::vector<float>& a, size_t comps) {
+                if (a.empty()) return;
+                for (size_t c = 0; c < comps; ++c) a[(static_cast<size_t>(k) * n + i) * comps + c] = a[i * comps + c];
+            };
+            for (auto& uv : v.uv) copy(uv, 2);
+            copy(v.color, 4);
+            copy(v.weights, 4);
+            copy(v.joints, 4);
+        }
+    }
+    v.count = total;
+    const size_t N = m.indices.size();
+    m.indices.resize(N * (I + 1));
+    for (const SubMesh& sm : m.subMeshes)
+        for (uint32_t k = 1; k <= I; ++k)
+            for (uint32_t j = 0; j < sm.indexCount; ++j) {
+                size_t dst = sm.indexStart + N * k + j;
+                if (dst < m.indices.size() && sm.indexStart + j < N)
+                    m.indices[dst] = static_cast<uint16_t>(m.indices[sm.indexStart + j] + n * k);
+            }
+    for (SubMesh& sm : m.subMeshes) {
+        sm.indexStart *= I + 1;
+        sm.indexCount *= I + 1;
+    }
+}
+
 Mesh readMesh(Reader& r, uint32_t version, bool decode) {  // ModelResource::readMesh @0x180145d40
     Mesh m;
     m.u11c = r.u32();
@@ -45,7 +115,7 @@ Mesh readMesh(Reader& r, uint32_t version, bool decode) {  // ModelResource::rea
     m.nodes = r.vec<uint16_t>(r.u16());
     if (version > 0x20029) {
         m.instanceCount = r.u32();
-        r.skip(0x28ull * m.instanceCount);
+        m.instances = r.vec<float>(10ull * m.instanceCount);  // Transform: scale, rotation, position
     }
     if (version < 0x2002B) throw FormatError("uncompressed vertex streams not supported");
     uint32_t vsize = r.u32();
@@ -75,6 +145,7 @@ Mesh readMesh(Reader& r, uint32_t version, bool decode) {  // ModelResource::rea
         s.indexCount = r.u32();
         m.subMeshes.push_back(s);
     }
+    if (decode && m.instanceCount) fixupMeshInstances(m);
     return m;
 }
 

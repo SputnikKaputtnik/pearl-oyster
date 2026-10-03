@@ -28,6 +28,7 @@ public:
     ModelInstance(std::shared_ptr<const ModelResource> geometry, std::vector<Material> materials);
 
     const ModelResource& model() const { return *geom_; }
+    uint64_t id() const { return id_; }  // unique per instance (GPU caches; addresses get reused)
     const std::vector<Material>& materials() const { return materials_; }
 
     Mat4 root;  // actor transform (scene graph node)
@@ -61,7 +62,9 @@ public:
 private:
     void bindAnimation();
     void evaluateVertexAnim(const SamplingPolicy& policy);
+    uint32_t vanmFrame(const VanmMesh& vm) const;  // VertexAnimator frame index (clamped)
 
+    uint64_t id_ = 0;
     std::shared_ptr<const ModelResource> geom_;
     std::vector<Material> materials_;
     std::vector<Mat4> local_, world_;
@@ -74,6 +77,7 @@ private:
     std::vector<std::vector<ChannelCache>> caches_, customCaches_;
     struct VanmBinding {
         int mesh = -1;
+        int node = -1;
         const VanmMesh* vm = nullptr;
         std::unique_ptr<VanmDecoder> pos0, pos1, nrm0, nrm1;
     };

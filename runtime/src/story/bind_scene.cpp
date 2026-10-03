@@ -664,6 +664,40 @@ int An_rewind(lua_State* L) {
     return 0;
 }
 
+// ---- Trigger (LookAtTrigger component) ----------------------------------------------------------
+// Ray/sphere test of the camera's forward ray against a trigger volume (FUN_180102db0 /
+// FUN_180102b70): centre = M * offset; hit when dp >= 0 and r^2 - (|d|^2 - dp^2) > 0.
+bool lookAtHit(const Mat4& m, const Vec3& offset, float radius, const Vec3& campos, const Vec3& camfwd) {
+    Vec3 d = m.transformPoint(offset) - campos;
+    float dp = d.dot(camfwd);
+    float len = std::sqrt(d.dot(d));
+    return 0.0f <= dp && 0.0f < radius * radius - (len * len - dp * dp);
+}
+Mat4 srtMatrixArg(lua_State* L, int idx) {
+    Vec3 p, s;
+    Quat r;
+    srtArg(L, idx, p, r, s);
+    return Mat4::trs(p, r, s);
+}
+int Trig_withoutParent(lua_State* L) {
+    // (ownerSRT, offset, radius, campos, camfwd)
+    bool hit = lookAtHit(srtMatrixArg(L, 1), vec3Arg(L, 2), static_cast<float>(optNumber(L, 3, 0)), vec3Arg(L, 4),
+                         vec3Arg(L, 5));
+    lua_pushboolean(L, hit);
+    return 1;
+}
+int Trig_withParent(lua_State* L) {
+    // (actor, ownerSRT, offset, radius, bone, campos, camfwd); a valid bone replaces the owner
+    // transform by the bone's MODEL matrix (no actor world - as in the original)
+    ActorNode* a = actorArg(L, 1);
+    Mat4 m = srtMatrixArg(L, 2);
+    int bone = static_cast<int>(optNumber(L, 5, -1));
+    if (boneOk(a, bone)) m = a->inst->root.inverse() * a->inst->nodeWorld(static_cast<size_t>(bone));
+    bool hit = lookAtHit(m, vec3Arg(L, 3), static_cast<float>(optNumber(L, 4, 0)), vec3Arg(L, 6), vec3Arg(L, 7));
+    lua_pushboolean(L, hit);
+    return 1;
+}
+
 // ---- Atmospherics / Fog ------------------------------------------------------------------------
 int Atm_createFog(lua_State* L) {
     Engine& e = engineOf(L);
@@ -768,6 +802,10 @@ void bindScene(Engine& e) {
     h.bindType("Projector", nullptr, "Transform");
     h.bindType("Depth", nullptr, "Transform");
     h.bindType("VideoCubePlayer", nullptr, "Transform");
+    static const luaL_Reg trigger[] = {{"evaluateLookAtTriggerWithParent", Trig_withParent},
+                                       {"evaluateLookAtTriggerWithoutParent", Trig_withoutParent},
+                                       {nullptr, nullptr}};
+    h.bindType("Trigger", trigger);
 }
 
 }  // namespace oyster::story
