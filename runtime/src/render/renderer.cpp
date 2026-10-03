@@ -158,7 +158,8 @@ Renderer::Renderer(const PackageFS& fs) : fs_(fs) {
 Renderer::~Renderer() {
     for (auto& kv : textures_) glDeleteTextures(1, &kv.second);
     for (auto& kv : programs_) if (kv.second->id) glDeleteProgram(kv.second->id);
-    for (auto& kv : meshes_) freeMesh(kv.second);
+    for (auto& kv : meshes_)
+        for (GpuMesh& g : kv.second) freeMesh(g);
     glDeleteTextures(1, &white_);
     if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); glDeleteBuffers(1, &quadVbo_); }
     if (particleVao_) {
@@ -169,6 +170,7 @@ Renderer::~Renderer() {
 }
 
 void Renderer::freeMesh(GpuMesh& g) {
+    if (!g.vao) return;
     glDeleteVertexArrays(1, &g.vao);
     glDeleteBuffers(10, g.vbo);
     glDeleteBuffers(1, &g.ibo);
@@ -180,12 +182,14 @@ void Renderer::freeMesh(GpuMesh& g) {
 void Renderer::releaseInstance(uint64_t instanceId) {
     for (auto pc = passCache_.begin(); pc != passCache_.end();)
         pc = pc->first.inst == instanceId ? passCache_.erase(pc) : std::next(pc);
-    for (auto b = bounds_.lower_bound({instanceId, 0}); b != bounds_.end() && b->first.first == instanceId;)
-        b = bounds_.erase(b);
-    auto it = meshes_.lower_bound({instanceId, 0});
-    while (it != meshes_.end() && it->first.first == instanceId) {
-        freeMesh(it->second);
-        it = meshes_.erase(it);
+    bounds_.erase(instanceId);
+    auto it = meshes_.find(instanceId);
+    if (it != meshes_.end()) {
+        for (GpuMesh& g : it->second) {
+            if (g.vao == boundVao_) boundVao_ = 0;  // a deleted bound VAO reverts to 0
+            freeMesh(g);
+        }
+        meshes_.erase(it);
     }
 }
 
@@ -433,15 +437,15 @@ Renderer::Program* Renderer::program(const std::string& uriIn) {
 }
 
 Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
-    auto key = std::make_pair(inst.id(), mi);
-    auto it = meshes_.find(key);
-    if (it != meshes_.end()) return it->second;
-    GpuMesh& g = meshes_[key];
+    std::vector<GpuMesh>& per = meshes_[inst.id()];
+    if (per.empty()) per.resize(inst.model().meshes.size());
+    GpuMesh& g = per[mi];
+    if (g.vao) return g;
     const Mesh& m = inst.model().meshes[mi];
     const VertexData& v = m.vertices;
     g.vertexCount = v.count;
     glGenVertexArrays(1, &g.vao);
-    glBindVertexArray(g.vao);
+    bindVao(g.vao);
     auto upload = [&](GLuint slot, const std::vector<float>& data, int comps) {
         if (data.empty()) return;
         glGenBuffers(1, &g.vbo[slot]);
@@ -465,7 +469,6 @@ Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
     glGenBuffers(1, &g.ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(m.indices.size() * 2), m.indices.data(), GL_STATIC_DRAW);
-    glBindVertexArray(0);
     return g;
 }
 
@@ -553,7 +556,7 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
     if (!quadVao_) {
         const float quad[12] = {-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0};
         glGenVertexArrays(1, &quadVao_);
-        glBindVertexArray(quadVao_);
+        bindVao(quadVao_);
         glGenBuffers(1, &quadVbo_);
         glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
@@ -613,9 +616,9 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
             glUniform1fv(loc, 1, &vp.time);
         }
     }
-    glBindVertexArray(quadVao_);
+    bindVao(quadVao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
+    bindVao(0);
     ++drawCalls_;
 }
 
@@ -721,7 +724,9 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
             if (!ms.visible) continue;
             // sort depth: view-space distance of the transformed bounds' centre / far + mesh bias
             bool animatedPos = ms.animated && !ms.position.empty();
-            MeshBounds& mb = bounds_[{inst.id(), mi}];
+            std::vector<MeshBounds>& perB = bounds_[inst.id()];
+            if (perB.size() != model.meshes.size()) perB.resize(model.meshes.size());
+            MeshBounds& mb = perB[mi];
             if (mb.revision == ~0ull || mb.animated != animatedPos || (animatedPos && mb.revision != ms.revision)) {
                 const std::vector<float>& pos = animatedPos ? ms.position : mesh.vertices.position;
                 Vec3 blo(1e30f, 1e30f, 1e30f), bhi(-1e30f, -1e30f, -1e30f);
@@ -833,7 +838,7 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
     const float *lpos = lb.pos, *ldir = lb.dir, *lrs = lb.rs, *lcol = lb.col;
     {
         GpuMesh& g = gpuMesh(inst, mi);
-        glBindVertexArray(g.vao);
+        bindVao(g.vao);
         if (ms.animated && ms.position.size() == 3ull * g.vertexCount) {
             if (!g.dynPos) { glGenBuffers(1, &g.dynPos); glGenBuffers(1, &g.dynNrm); }
             if (g.revision != ms.revision) {
@@ -881,7 +886,7 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
             (void)passIndex;
             PassCache& pc = passCache(d, pass, mat);
             Program* prog = pc.prog;
-            if (!prog || !prog->ok) { glBindVertexArray(0); return; }
+            if (!prog || !prog->ok) return;
             useProgram(prog->id);
             applyRenderState(pass.state);
 
@@ -968,7 +973,6 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                            reinterpret_cast<const void*>(static_cast<uintptr_t>(sm.indexStart) * 2));
             ++drawCalls_;
         }
-        glBindVertexArray(0);
     }
 }
 
@@ -992,10 +996,10 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
             uint16_t b = static_cast<uint16_t>(q * 4);
             for (uint16_t o : {0, 1, 2, 0, 2, 3}) idx.push_back(static_cast<uint16_t>(b + o));
         }
-        glBindVertexArray(particleVao_);
+        bindVao(particleVao_);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, particleIbo_);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(idx.size() * 2), idx.data(), GL_STATIC_DRAW);
-        glBindVertexArray(0);
+        bindVao(0);
     }
 
     // life parameter (mode 0: age / lifetime, capped at 0.999, with optional fade-in/out ramps)
@@ -1136,7 +1140,7 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
         }
     }
 
-    glBindVertexArray(particleVao_);
+    bindVao(particleVao_);
     glBindBuffer(GL_ARRAY_BUFFER, particleVbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(particleVerts_.size() * 4), particleVerts_.data(), GL_STREAM_DRAW);
     struct Attr {
@@ -1165,7 +1169,7 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
     }
     for (const Attr& a : attrs)
         if (a.loc >= 0) glDisableVertexAttribArray(static_cast<GLuint>(a.loc));
-    glBindVertexArray(0);
+    bindVao(0);
 }
 
 }  // namespace oyster

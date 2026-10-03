@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "assets/anim.h"
@@ -88,7 +89,13 @@ private:
     };
     std::vector<VanmBinding> vanm_;
     struct ParamValue { float v[4] = {0, 0, 0, 0}; uint32_t mask = 0; };
-    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, ParamValue> params_;
+    struct ParamKeyHash {
+        size_t operator()(const std::tuple<uint32_t, uint32_t, uint32_t>& k) const {
+            uint64_t h = (static_cast<uint64_t>(std::get<0>(k)) << 32 | std::get<1>(k)) * 0x9E3779B97F4A7C15ull;
+            return static_cast<size_t>(h ^ (h >> 29) ^ std::get<2>(k));
+        }
+    };
+    std::unordered_map<std::tuple<uint32_t, uint32_t, uint32_t>, ParamValue, ParamKeyHash> params_;
     std::map<std::pair<int, uint32_t>, ParamValue> nodeCustom_;
 };
 

@@ -150,6 +150,11 @@ private:
     static void freeMesh(GpuMesh& g);
     void applyRenderState(const RenderState& s);
     void useProgram(GLuint id);
+    void bindVao(GLuint vao) {
+        if (vao != boundVao_) gl::glBindVertexArray(vao);
+        boundVao_ = vao;
+    }
+    GLuint boundVao_ = 0;
     bool uniformUnchanged(Program& p, GLint loc, const void* data, int n);
     void bindTexture(int unit, GLuint tex);
     GLuint boundTex_[32] = {};
@@ -216,13 +221,13 @@ private:
     GLuint particleVao_ = 0, particleVbo_ = 0, particleIbo_ = 0;
     std::vector<float> particleVerts_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;
-    std::map<std::pair<uint64_t, size_t>, GpuMesh> meshes_;  // (ModelInstance::id, mesh)
+    std::unordered_map<uint64_t, std::vector<GpuMesh>> meshes_;  // ModelInstance::id -> per mesh
     struct MeshBounds {  // local bounds of a mesh's current vertices (sort depth)
         uint64_t revision = ~0ull;
         bool animated = false;
         Vec3 lo, hi;
     };
-    std::map<std::pair<uint64_t, size_t>, MeshBounds> bounds_;
+    std::unordered_map<uint64_t, std::vector<MeshBounds>> bounds_;  // ModelInstance::id -> per mesh
     std::map<std::string, bool> warned_;
     size_t drawCalls_ = 0;
     GLuint white_ = 0;
