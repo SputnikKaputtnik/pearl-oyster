@@ -11,9 +11,15 @@ OYSTER_GL_FUNCS(OYSTER_GL_DEFINE)
 PFN_glInvalidateFramebuffer glInvalidateFramebuffer = nullptr;
 PFN_glFramebufferTexture2DMultisampleEXT glFramebufferTexture2DMultisampleEXT = nullptr;
 PFN_glRenderbufferStorageMultisampleEXT glRenderbufferStorageMultisampleEXT = nullptr;
+PFN_glGetProgramBinary glGetProgramBinary = nullptr;
+PFN_glProgramBinary glProgramBinary = nullptr;
+PFN_glProgramParameteri glProgramParameteri = nullptr;
 
 const char* load(void* (*getProc)(const char*)) {
     glInvalidateFramebuffer = reinterpret_cast<PFN_glInvalidateFramebuffer>(getProc("glInvalidateFramebuffer"));
+    glGetProgramBinary = reinterpret_cast<PFN_glGetProgramBinary>(getProc("glGetProgramBinary"));
+    glProgramBinary = reinterpret_cast<PFN_glProgramBinary>(getProc("glProgramBinary"));
+    glProgramParameteri = reinterpret_cast<PFN_glProgramParameteri>(getProc("glProgramParameteri"));
     glFramebufferTexture2DMultisampleEXT =
         reinterpret_cast<PFN_glFramebufferTexture2DMultisampleEXT>(getProc("glFramebufferTexture2DMultisampleEXT"));
     glRenderbufferStorageMultisampleEXT =

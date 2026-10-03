@@ -48,13 +48,15 @@ add_library(oyster_story STATIC
   src/story/native_api_names.cpp
   src/story/lua_json.cpp
   src/story/engine.cpp
+  src/story/prefetcher.cpp
   src/story/bind_core.cpp
   src/story/bind_scene.cpp
   src/story/bind_render.cpp
   src/story/bind_audio.cpp
   src/audio/audio_engine.cpp
 )
-target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile)
+find_package(Threads REQUIRED)
+target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile Threads::Threads)
 
 # Android: headless engine self test, run from adb shell (no app window / OpenXR needed)
 if(ANDROID)

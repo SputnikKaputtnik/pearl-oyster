@@ -49,6 +49,16 @@ std::string PackageFS::resolve(const std::string& uri) const {
     return (fs::u8path(root_) / fs::u8path(it->second)).u8string();
 }
 
+std::vector<std::string> PackageFS::list(const std::string& suffix) const {
+    std::string sfx = normalize(suffix);
+    std::vector<std::string> out;
+    for (const auto& kv : index_)
+        if (kv.first.size() >= sfx.size() && kv.first.compare(kv.first.size() - sfx.size(), sfx.size(), sfx) == 0)
+            out.push_back(kv.first);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 std::vector<uint8_t> PackageFS::read(const std::string& uri) const {
     std::string p = resolve(uri);
     if (p.empty()) throw std::runtime_error("missing asset " + uri);

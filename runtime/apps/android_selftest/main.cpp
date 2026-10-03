@@ -7,6 +7,7 @@
 //   e.g. adb push oyster_selftest /data/local/tmp && adb shell /data/local/tmp/oyster_selftest /sdcard/Oyster/pearl 6000
 #include <EGL/egl.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -80,6 +81,9 @@ int main(int argc, char** argv) {
         opt.width = eyeW;
         opt.height = eyeH;
         opt.msaa = msaa;
+        opt.precompileShaders = true;
+        opt.shaderCacheDir = "shadercache";  // relative to the working directory
+        mkdir("shadercache", 0755);
         story::Engine engine(fs, opt);
         story::HmdState& h = engine.hmd();
         h.active = true;

@@ -114,6 +114,11 @@ bool SGNode::effectiveVisible() const {
 Engine::Engine(const PackageFS& fs, const EngineOptions& opt) : fs_(fs), opt_(opt) {
     lua_ = std::make_unique<LuaHost>(fs);
     renderer_ = std::make_unique<Renderer>(fs);
+    renderer_->setShaderCache(opt.shaderCacheDir);
+    prefetch_ = std::make_unique<Prefetcher>(fs, 2);
+    renderer_->fileSource = [this](const std::string& uri, std::vector<uint8_t>& bytes) {
+        return prefetch_->takeFile(uri, bytes);
+    };
     audio_ = std::make_unique<audio::Engine>();
     width_ = opt.width;
     height_ = opt.height;
@@ -175,6 +180,13 @@ bool Engine::boot() {
     lua_setfield(L, -2, "autosaveInterval");
     setBool("renderToDisk", false);
     lua_setglobal(L, "Platform");
+    if (opt_.precompileShaders) {
+        auto t0 = std::chrono::steady_clock::now();
+        size_t n = renderer_->precompileAll();
+        std::fprintf(stderr, "shaders: %zu programs ready in %.0f ms (%zu from the binary cache)\n", n,
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+                     renderer_->programsFromCache);
+    }
     if (!lua_->require("story/scripts/app")) return false;
     // The story scheduler drops failed tasks silently (its Log.error is commented out); report
     // them without changing behaviour.
@@ -207,7 +219,31 @@ bool timingOn() {
 }
 }  // namespace
 
+// loads that happened on the main thread during the current frame (OYSTER_DEBUG_TIMING)
+namespace {
+struct LoadStats {
+    double ms[5] = {0, 0, 0, 0, 0};  // model, anim, audio, instantiate, particles
+    int n[5] = {0, 0, 0, 0, 0};
+} gLoads;
+struct LoadTimer {
+    int k;
+    double t0;
+    explicit LoadTimer(int kind) : k(kind), t0(nowMs()) {}
+    ~LoadTimer() {
+        gLoads.ms[k] += nowMs() - t0;
+        ++gLoads.n[k];
+    }
+};
+}  // namespace
+
 bool Engine::frame(double dtSeconds) {
+    double frameStart = timingOn() ? nowMs() : 0;
+    double texBefore = renderer_->texReadMs + renderer_->texDecodeMs + renderer_->texUploadMs;
+    size_t texLoadsBefore = renderer_->texLoads;
+    double progBefore = renderer_->programMs;
+    size_t progLoadsBefore = renderer_->programLoads;
+    gLoads = LoadStats();
+    prefetch_->expire(120.0);
     int64_t dt = time_.fixedStepMs > 0 ? static_cast<int64_t>(std::llround(time_.fixedStepMs * 1000.0))
                                        : static_cast<int64_t>(std::llround(dtSeconds * 1e6));
     if (time_.paused) dt = 0;
@@ -220,6 +256,18 @@ bool Engine::frame(double dtSeconds) {
     if (timingOn()) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
     ok = lua_->callApplication("onRender") && ok;
     ++frameIndex;
+    if (timingOn()) {
+        double total = nowMs() - frameStart;
+        if (total > 50.0)
+            std::fprintf(stderr,
+                         "slow frame %llu: %.0f ms - models %.0f ms (%d), anims %.0f (%d), audio %.0f (%d), instances %.0f (%d), "
+                         "particles %.0f (%d), textures %.0f (%zu), shaders %.0f (%zu)\n",
+                         static_cast<unsigned long long>(frameIndex), total, gLoads.ms[0], gLoads.n[0], gLoads.ms[1],
+                         gLoads.n[1], gLoads.ms[2], gLoads.n[2], gLoads.ms[3], gLoads.n[3], gLoads.ms[4], gLoads.n[4],
+                         renderer_->texReadMs + renderer_->texDecodeMs + renderer_->texUploadMs - texBefore,
+                         renderer_->texLoads - texLoadsBefore, renderer_->programMs - progBefore,
+                         renderer_->programLoads - progLoadsBefore);
+    }
     if (timingOn() && frameIndex % 300 == 0) {
         std::string line = "timing/frame:";
         for (auto& ph : gPhases) {
@@ -272,6 +320,13 @@ std::shared_ptr<const audio::PcmClip> Engine::audioClip(const std::string& uri) 
     auto it = clips_.find(uri);
     if (it != clips_.end()) return it->second;
     std::shared_ptr<const audio::PcmClip> c;
+    LoadTimer lt(2);
+    bool found = false;
+    c = prefetch_->takeAudio(uri, found);
+    if (found) {
+        clips_[uri] = c;
+        return c;
+    }
     try {
         c = audio::decodeVorbis(fs_.read(uri));
     } catch (const std::exception& ex) {
@@ -293,7 +348,10 @@ void Engine::loadHrtf(const std::string& uri) {
 std::shared_ptr<ModelResource> Engine::model(const std::string& uri) {
     auto it = models_.find(uri);
     if (it != models_.end()) return it->second;
-    std::shared_ptr<ModelResource> m = loadModel(fs_.read(uri));
+    LoadTimer lt(0);
+    bool found = false;
+    std::shared_ptr<ModelResource> m = prefetch_->takeModel(uri, found);
+    if (!found) m = loadModel(fs_.read(uri));
     models_[uri] = m;
     return m;
 }
@@ -301,7 +359,10 @@ std::shared_ptr<ModelResource> Engine::model(const std::string& uri) {
 std::shared_ptr<AnimResource> Engine::anim(const std::string& uri) {
     auto it = anims_.find(uri);
     if (it != anims_.end()) return it->second;
-    std::shared_ptr<AnimResource> a = loadAnim(fs_.read(uri));
+    LoadTimer lt(1);
+    bool found = false;
+    std::shared_ptr<AnimResource> a = prefetch_->takeAnim(uri, found);
+    if (!found) a = loadAnim(fs_.read(uri));
     anims_[uri] = a;
     return a;
 }
@@ -310,6 +371,7 @@ std::shared_ptr<const ParticleSystemResource> Engine::particleSystem(const std::
     auto it = particleSystems_.find(uri);
     if (it != particleSystems_.end()) return it->second;
     std::shared_ptr<const ParticleSystemResource> ps;
+    LoadTimer lt(4);
     try {
         ps = loadParticleSystem(fs_.read(uri));
     } catch (const std::exception& ex) {
@@ -324,6 +386,7 @@ std::unique_ptr<ModelInstance> Engine::instantiate(const std::string& uri) {
     std::shared_ptr<ModelResource> geom = m;
     if (m->isPatch()) geom = model(m->baseModel);
     std::vector<Material> mats = (m->isPatch() && m->overridesMaterials) ? m->materials : geom->materials;
+    LoadTimer lt(3);
     return std::make_unique<ModelInstance>(geom, mats);
 }
 

@@ -187,5 +187,14 @@ using PFN_glRenderbufferStorageMultisampleEXT = void (*)(GLenum, GLsizei, GLenum
 extern PFN_glInvalidateFramebuffer glInvalidateFramebuffer;
 extern PFN_glFramebufferTexture2DMultisampleEXT glFramebufferTexture2DMultisampleEXT;
 extern PFN_glRenderbufferStorageMultisampleEXT glRenderbufferStorageMultisampleEXT;
+// program binaries (GLES 3.0) for the shader cache
+using PFN_glGetProgramBinary = void (*)(GLuint, GLsizei, GLsizei*, GLenum*, void*);
+using PFN_glProgramBinary = void (*)(GLuint, GLenum, const void*, GLsizei);
+using PFN_glProgramParameteri = void (*)(GLuint, GLenum, GLint);
+extern PFN_glGetProgramBinary glGetProgramBinary;
+extern PFN_glProgramBinary glProgramBinary;
+extern PFN_glProgramParameteri glProgramParameteri;
+#define GL_PROGRAM_BINARY_RETRIEVABLE_HINT 0x8257
+#define GL_PROGRAM_BINARY_LENGTH 0x8741
 bool hasExtension(const char* name);
 }  // namespace oyster::gl

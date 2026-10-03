@@ -79,7 +79,7 @@ int System_noop(lua_State* L) { return 0; }
 int System_string(lua_State* L) { lua_pushstring(L, "oyster"); return 1; }
 int System_createResourceGroup(lua_State* L) {
     Engine& e = engineOf(L);
-    auto* g = e.create<GenericObj>("ResourceGroup");
+    auto* g = e.create<ResourceGroupObj>("ResourceGroup");
     g->name = optString(L, firstArg(L));
     pushObject(L, g);
     lua_pushstring(L, g->name.c_str());
@@ -92,11 +92,33 @@ int System_exists(lua_State* L) {
 }
 
 // ---- ResourceGroup (everything is local: always complete) ------------------------------------
-int RG_addResource(lua_State* L) { return 0; }
-int RG_prefetch(lua_State* L) { return 0; }
-int RG_getCount(lua_State* L) { lua_pushnumber(L, 0); return 1; }
+// ResourceGroup:addResource(rtti, uri) / prefetch() / destroy(): background loading (Prefetcher)
+int RG_addResource(lua_State* L) {
+    auto* g = objectArg<ResourceGroupObj>(L, 1);
+    if (!g) return 0;
+    std::string rtti = optString(L, 2), uri = optString(L, 3);
+    if (uri.empty()) return 0;
+    if (rtti == "ModelResource") g->items.emplace_back(Prefetcher::Kind::Model, uri);
+    else if (rtti == "AnimResource") g->items.emplace_back(Prefetcher::Kind::Anim, uri);
+    else if (rtti == "AudioResource") g->items.emplace_back(Prefetcher::Kind::Audio, uri);
+    return 0;
+}
+int RG_prefetch(lua_State* L) {
+    if (auto* g = objectArg<ResourceGroupObj>(L, 1))
+        for (const auto& it : g->items) engineOf(L).prefetcher().request(it.first, it.second);
+    return 0;
+}
+int RG_getCount(lua_State* L) {
+    auto* g = objectArg<ResourceGroupObj>(L, 1);
+    lua_pushnumber(L, g ? static_cast<double>(g->items.size()) : 0.0);
+    return 1;
+}
 int RG_destroy(lua_State* L) {
-    if (auto* g = objectArg<GenericObj>(L, 1)) LuaHost::from(L).destroy(g->handle);
+    if (auto* g = objectArg<ResourceGroupObj>(L, 1)) {
+        // results nobody took belong to a branch the story did not go (or were already loaded)
+        for (const auto& it : g->items) engineOf(L).prefetcher().drop(it.first, it.second);
+        LuaHost::from(L).destroy(g->handle);
+    }
     return 0;
 }
 int RG_status(lua_State* L) {

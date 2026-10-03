@@ -20,6 +20,7 @@ public:
     std::vector<uint8_t> read(const std::string& uri) const;  // throws if missing
     const std::string& root() const { return root_; }
     size_t fileCount() const { return index_.size(); }
+    std::vector<std::string> list(const std::string& suffix) const;  // normalized URIs ending in suffix
 
     static std::string normalize(const std::string& uri);  // lower case, '/' separators
 

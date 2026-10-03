@@ -20,6 +20,7 @@
 #include "scene/model_instance.h"
 #include "scene/particles.h"
 #include "story/lua_host.h"
+#include "story/prefetcher.h"
 
 namespace oyster {
 class Renderer;
@@ -111,6 +112,12 @@ struct SceneObj : NativeObject {
     std::vector<SGNode*> nodes;  // creation order
 };
 
+// System.createResourceGroup: resources the story will need for a coming state
+struct ResourceGroupObj : NativeObject {
+    std::string name;
+    std::vector<std::pair<Prefetcher::Kind, std::string>> items;
+};
+
 struct RenderGraphObj : NativeObject {
     std::string name;
     Json def, views;
@@ -183,6 +190,8 @@ struct EngineOptions {
     SamplingPolicy policy = SamplingPolicy::original();
     int width = 1280, height = 720;
     int msaa = 2;
+    std::string shaderCacheDir;      // program binary cache (empty: none)
+    bool precompileShaders = false;  // build every shader of the package at boot
 };
 
 class Engine {
@@ -252,6 +261,10 @@ private:
     std::unique_ptr<LuaHost> lua_;
     std::unique_ptr<Renderer> renderer_;
     std::unique_ptr<audio::Engine> audio_;
+public:
+    Prefetcher& prefetcher() { return *prefetch_; }
+private:
+    std::unique_ptr<Prefetcher> prefetch_;
     std::map<std::string, std::shared_ptr<const audio::PcmClip>> clips_;
     std::map<std::string, std::shared_ptr<const ParticleSystemResource>> particleSystems_;
     bool hrtfLoaded_ = false;

@@ -235,7 +235,9 @@ GLuint Renderer::texture(const std::string& uri) {
     double tl0 = cpuMs();
     ++texLoads;
     try {
-        TextureData d = loadDDS(fs_.read(uri));
+        std::vector<uint8_t> file;
+        if (!(fileSource && fileSource(uri, file))) file = fs_.read(uri);
+        TextureData d = loadDDS(file);
         double tl1 = cpuMs();
         texReadMs += tl1 - tl0;
         tl0 = tl1;
@@ -289,32 +291,122 @@ GLuint Renderer::texture(const std::string& uri) {
     return t;
 }
 
-Renderer::Program* Renderer::program(const std::string& uri) {
+namespace {
+uint64_t fnv64(const void* data, size_t n, uint64_t h = 0xcbf29ce484222325ull) {
+    const auto* b = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 0x100000001b3ull;
+    return h;
+}
+}  // namespace
+
+size_t Renderer::precompileAll() {
+    size_t n = 0;
+    for (const std::string& uri : fs_.list(".shd")) {
+        program(uri);
+        ++n;
+    }
+    return n;
+}
+
+// Links p from the cached binary if one matches this source and driver, else compiles the
+// GLSL and stores the binary. Attribute bindings are part of the binary.
+bool Renderer::linkProgram(Program& p, const std::string& key, const std::vector<uint8_t>& source) {
+    std::string cacheFile;
+    uint64_t srcHash = fnv64(source.data(), source.size());
+    if (!shaderCacheDir_.empty() && glProgramBinary && glGetProgramBinary) {
+        const char* drv = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+        const char* ver = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+        srcHash = fnv64(drv, drv ? std::strlen(drv) : 0, srcHash);
+        srcHash = fnv64(ver, ver ? std::strlen(ver) : 0, srcHash);
+        char name[64];
+        std::snprintf(name, sizeof(name), "/%016llx.bin", static_cast<unsigned long long>(fnv64(key.data(), key.size())));
+        cacheFile = shaderCacheDir_ + name;
+        std::FILE* f = std::fopen(cacheFile.c_str(), "rb");
+        if (f) {
+            uint64_t h = 0;
+            uint32_t fmt = 0;
+            std::vector<uint8_t> bin;
+            if (std::fread(&h, 8, 1, f) == 1 && std::fread(&fmt, 4, 1, f) == 1 && h == srcHash) {
+                std::fseek(f, 0, SEEK_END);
+                long end = std::ftell(f);
+                bin.resize(static_cast<size_t>(std::max(0L, end - 12)));
+                std::fseek(f, 12, SEEK_SET);
+                if (!bin.empty() && std::fread(bin.data(), 1, bin.size(), f) == bin.size()) {
+                    p.id = glCreateProgram();
+                    glProgramBinary(p.id, fmt, bin.data(), static_cast<GLsizei>(bin.size()));
+                    GLint ok = 0;
+                    glGetProgramiv(p.id, GL_LINK_STATUS, &ok);
+                    if (ok) {
+                        std::fclose(f);
+                        ++programsFromCache;
+                        return true;
+                    }
+                    glDeleteProgram(p.id);
+                    p.id = 0;
+                }
+            }
+            std::fclose(f);
+        }
+    }
+    std::string log;
+    GLuint vs = compileShader(GL_VERTEX_SHADER, p.meta.vs, log);
+    if (!vs) throw std::runtime_error("VS: " + log);
+    GLuint fsh = compileShader(GL_FRAGMENT_SHADER, p.meta.fs, log);
+    if (!fsh) { glDeleteShader(vs); throw std::runtime_error("FS: " + log); }
+    p.id = glCreateProgram();
+    glAttachShader(p.id, vs);
+    glAttachShader(p.id, fsh);
+    for (GLuint i = 0; i < 10; ++i) glBindAttribLocation(p.id, i, kAttribNames[i]);
+    if (!cacheFile.empty() && glProgramParameteri) glProgramParameteri(p.id, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+    glLinkProgram(p.id);
+    glDeleteShader(vs);
+    glDeleteShader(fsh);
+    GLint ok = 0;
+    glGetProgramiv(p.id, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char buf[4096];
+        GLsizei n = 0;
+        glGetProgramInfoLog(p.id, sizeof(buf), &n, buf);
+        throw std::runtime_error("link: " + std::string(buf, static_cast<size_t>(n)));
+    }
+    if (!cacheFile.empty()) {
+        GLint len = 0;
+        glGetProgramiv(p.id, GL_PROGRAM_BINARY_LENGTH, &len);
+        if (len > 0) {
+            std::vector<uint8_t> bin(static_cast<size_t>(len));
+            GLenum fmt = 0;
+            GLsizei got = 0;
+            glGetProgramBinary(p.id, len, &got, &fmt, bin.data());
+            if (got > 0) {
+                if (std::FILE* f = std::fopen(cacheFile.c_str(), "wb")) {
+                    uint32_t fmt32 = fmt;
+                    std::fwrite(&srcHash, 8, 1, f);
+                    std::fwrite(&fmt32, 4, 1, f);
+                    std::fwrite(bin.data(), 1, static_cast<size_t>(got), f);
+                    std::fclose(f);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+Renderer::Program* Renderer::program(const std::string& uriIn) {
+    const std::string uri = PackageFS::normalize(uriIn);  // one program per file, however it is spelled
     auto it = programs_.find(uri);
     if (it != programs_.end()) return it->second.get();
     auto p = std::make_unique<Program>();
+    double tp0 = cpuMs();
+    ++programLoads;
+    struct ProgTimer {
+        double t0;
+        double& acc;
+        ~ProgTimer() { acc += cpuMs() - t0; }
+    } progTimer{tp0, programMs};
     try {
-        p->meta = loadShaderFile(fs_.read(uri));
-        std::string log;
-        GLuint vs = compileShader(GL_VERTEX_SHADER, p->meta.vs, log);
-        if (!vs) throw std::runtime_error("VS: " + log);
-        GLuint fsh = compileShader(GL_FRAGMENT_SHADER, p->meta.fs, log);
-        if (!fsh) { glDeleteShader(vs); throw std::runtime_error("FS: " + log); }
-        p->id = glCreateProgram();
-        glAttachShader(p->id, vs);
-        glAttachShader(p->id, fsh);
-        for (GLuint i = 0; i < 10; ++i) glBindAttribLocation(p->id, i, kAttribNames[i]);
-        glLinkProgram(p->id);
-        glDeleteShader(vs);
-        glDeleteShader(fsh);
-        GLint ok = 0;
-        glGetProgramiv(p->id, GL_LINK_STATUS, &ok);
-        if (!ok) {
-            char buf[4096];
-            GLsizei n = 0;
-            glGetProgramInfoLog(p->id, sizeof(buf), &n, buf);
-            throw std::runtime_error("link: " + std::string(buf, static_cast<size_t>(n)));
-        }
+        std::vector<uint8_t> src = fs_.read(uri);
+        p->meta = loadShaderFile(src);
+        linkProgram(*p, uri, src);
         for (const ShaderUniform& u : p->meta.uniforms) p->loc.push_back(glGetUniformLocation(p->id, u.name.c_str()));
         p->ok = true;
     } catch (const std::exception& e) {

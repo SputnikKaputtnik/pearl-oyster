@@ -1,5 +1,6 @@
 // GLES 3.0 renderer for Moxie materials and models (scene passes of a render graph).
 #pragma once
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -74,6 +75,8 @@ public:
                    const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
+    // optional source of texture file bytes that were read ahead (story::Prefetcher)
+    std::function<bool(const std::string&, std::vector<uint8_t>&)> fileSource;
     // Texture memory: every texture remembers the frame it was last bound in. With a budget
     // (bytes, 0 = unlimited) beginFrame() frees the least recently used textures that were not
     // used for `minIdleFrames` until the total fits (they are reloaded on demand).
@@ -88,6 +91,8 @@ public:
     size_t uploadBytes = 0;
     double texReadMs = 0, texDecodeMs = 0, texUploadMs = 0;  // texture loads (accumulated)
     size_t texLoads = 0;
+    double programMs = 0;  // shader compile + link (accumulated)
+    size_t programLoads = 0;
     void resetStats() { drawCalls_ = 0; }
     std::vector<std::string> warnings;
 
@@ -98,6 +103,12 @@ public:
         bool ok = false;
     };
     Program* program(const std::string& uri);
+    // Shader programs: compiled on first use; with a cache directory the driver's program
+    // binaries are stored and reused (keyed by shader source and driver), and precompileAll()
+    // builds every shader of the package up front so the story never waits for the compiler.
+    void setShaderCache(const std::string& dir) { shaderCacheDir_ = dir; }
+    size_t precompileAll();
+    size_t programsFromCache = 0;
 
 private:
     struct LightBlock {
@@ -166,6 +177,8 @@ private:
     void warnOnce(const std::string& w);
 
     const PackageFS& fs_;
+    std::string shaderCacheDir_;
+    bool linkProgram(Program& p, const std::string& key, const std::vector<uint8_t>& source);
     std::unordered_map<std::string, GLuint> textures_;
     std::unordered_map<std::string, std::pair<int, int>> textureSizes_;
     struct TexUse {
