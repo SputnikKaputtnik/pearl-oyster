@@ -51,6 +51,34 @@ class Reader:
         return {"kind": kind, "hash": h, "uri": full, "fields": (a, b), "offsets": (o1, o2, o3)}
 
 
+# Engine enum index -> OpenGL enum (table @0x1802322e0, used by RenderDeviceGL::setRenderStateCached)
+GL_ENUM = ("ZERO", "ONE", "SRC_COLOR", "SRC_ALPHA", "DST_COLOR", "DST_ALPHA", "ONE_MINUS_SRC_COLOR",
+           "ONE_MINUS_SRC_ALPHA", "ONE_MINUS_DST_COLOR", "ONE_MINUS_DST_ALPHA", "SRC_ALPHA_SATURATE",
+           "CONSTANT_COLOR", "CONSTANT_ALPHA", "FUNC_ADD", "FUNC_SUBTRACT", "FUNC_REVERSE_SUBTRACT",
+           "MIN", "MAX", "NEVER", "ALWAYS", "LESS", "LEQUAL", "GREATER", "GEQUAL", "NOTEQUAL", "KEEP",
+           "REPLACE", "INVERT", "INCR", "DECR", "FRONT", "BACK", "FRONT_AND_BACK", "CW", "CCW",
+           "POINT", "LINE", "FILL")
+
+
+def decode_render_state(b):
+    """MOXIE::RenderState (0x94 bytes) as applied by RenderDeviceGL::setRenderStateCached."""
+    u = lambda o: struct.unpack_from("<I", b, o)[0]  # noqa: E731
+    f = lambda o: struct.unpack_from("<f", b, o)[0]  # noqa: E731
+    e = lambda o: GL_ENUM[u(o)] if u(o) < len(GL_ENUM) else u(o)  # noqa: E731
+    return {
+        "blend": bool(b[0]), "blendSrcRGB": e(4), "blendSrcAlpha": e(8), "blendDstRGB": e(0xC),
+        "blendDstAlpha": e(0x10), "blendColor": struct.unpack_from("<4f", b, 0x14),
+        "blendEqRGB": e(0x24), "blendEqAlpha": e(0x28), "depthTest": bool(b[0x2C]),
+        "depthWrite": bool(b[0x2D]), "depthFunc": e(0x30), "depthRange": (f(0x34), f(0x38)),
+        "scissor": bool(b[0x3C]), "scissorRect": struct.unpack_from("<4i", b, 0x40),
+        "stencil": bool(b[0x50]), "stencilMask": u(0x54), "stencilFunc": e(0x58), "stencilRef": u(0x5C),
+        "stencilReadMask": u(0x60), "stencilOps": (e(0x64), e(0x68), e(0x6C)),
+        "colorMask": tuple(bool(x) for x in b[0x70:0x74]), "cull": bool(b[0x74]), "cullFace": e(0x78),
+        "polygonMode": e(0x7C), "polygonOffset": bool(b[0x80]), "polygonOffsetFU": (f(0x84), f(0x88)),
+        "dither": bool(b[0x8C]), "f32_90": f(0x90),
+    }
+
+
 def read_param(r):  # MaterialParameter base + subclass payload
     ptype = r.u16()
     name_hash = r.u32()
@@ -81,7 +109,8 @@ def read_material(r):
         state = r.take(0x94)
         u_d4 = r.u32()
         params = [read_param(r) for _ in range(r.u32())]
-        passes.append({"shader": shader, "state": state, "u_d4": u_d4, "params": params})
+        passes.append({"shader": shader, "state": state, "render_state": decode_render_state(state),
+                       "u_d4": u_d4, "params": params})
     return {"name": name, "passes": passes}
 
 
