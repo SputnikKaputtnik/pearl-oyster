@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -170,8 +171,27 @@ int main(int argc, char** argv) {
         bool quit = false;
         for (long f = 0; !quit && (args.frames == 0 || f < args.frames); ++f) {
             SDL_Event ev;
-            while (SDL_PollEvent(&ev))
+            float wheel = 0;
+            while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_QUIT) quit = true;
+                else if (ev.type == SDL_MOUSEWHEEL) wheel += static_cast<float>(ev.wheel.y);
+            }
+            if (args.window) {
+                int mx = 0, my = 0;
+                Uint32 mb = SDL_GetMouseState(&mx, &my);
+                const bool b[3] = {(mb & SDL_BUTTON_LMASK) != 0, (mb & SDL_BUTTON_MMASK) != 0,
+                                   (mb & SDL_BUTTON_RMASK) != 0};
+                engine.input().update(static_cast<float>(mx), static_cast<float>(my), b, wheel);
+            } else if (const char* drag = std::getenv("OYSTER_DEBUG_DRAG")) {
+                // "first,dx,dy": headless left-button drag from frame `first` on, dx/dy pixels per frame
+                long first = 0;
+                float dx = 0, dy = 0;
+                std::sscanf(drag, "%ld,%f,%f", &first, &dx, &dy);
+                const bool b[3] = {f >= first, false, false};
+                const story::InputState& in = engine.input();
+                float x = in.mouseX + (f > first ? dx : 0), y = in.mouseY + (f > first ? dy : 0);
+                engine.input().update(x, y, b, 0);
+            }
             auto now = std::chrono::steady_clock::now();
             double dt = std::chrono::duration<double>(now - last).count();
             last = now;

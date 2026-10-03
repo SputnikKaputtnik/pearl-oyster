@@ -123,14 +123,49 @@ int FSM_getName(lua_State* L) {
 }
 int FSM_noop(lua_State* L) { return 0; }
 
-// ---- Input (no keyboard/mouse input is fed to the story in this player) ----------------------
+// ---- Input (mouse from the host window; no keyboard input is fed to the story) -------------
 int In_false(lua_State* L) { lua_pushboolean(L, 0); return 1; }
-int In_zero(lua_State* L) { lua_pushnumber(L, 0); return 1; }
-int In_vec2(lua_State* L) {
-    lua_pushnumber(L, 0);
-    lua_pushnumber(L, 0);
-    return 2;
+
+// Vector2 the way the original pushes it (FUN_1800dd5f0): table with metatable Vector2
+void pushVec2(lua_State* L, float x, float y) {
+    lua_createtable(L, 0, 0);
+    int t = lua_gettop(L);
+    lua_getglobal(L, "Vector2");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, t);
+    lua_pushnumber(L, x);
+    lua_setfield(L, t, "x");
+    lua_pushnumber(L, y);
+    lua_setfield(L, t, "y");
 }
+int In_isMouseMoving(lua_State* L) {
+    lua_pushboolean(L, engineOf(L).input().moving);
+    return 1;
+}
+int In_getMouseButton(lua_State* L) {
+    // (button [, down-this-frame]): the second form is not tracked (not used by Pearl)
+    int a = firstArg(L);
+    int b = static_cast<int>(optNumber(L, a, 0));
+    bool v = b >= 0 && b < 3 && !(lua_gettop(L) > a && lua_toboolean(L, a + 1)) && engineOf(L).input().buttons[b];
+    lua_pushboolean(L, v);
+    return 1;
+}
+int In_getMousePosition(lua_State* L) {
+    const InputState& in = engineOf(L).input();
+    pushVec2(L, in.mouseX, in.mouseY);
+    return 1;
+}
+int In_getMouseDelta(lua_State* L) {
+    const InputState& in = engineOf(L).input();
+    pushVec2(L, in.deltaX, in.deltaY);
+    return 1;
+}
+int In_getMouseWheelDelta(lua_State* L) {
+    lua_pushnumber(L, engineOf(L).input().wheel);
+    return 1;
+}
+int In_zero(lua_State* L) { lua_pushnumber(L, 0); return 1; }
 
 // ---- DisplayDevice / Sensor (desktop mono: no HMD, no sensors) -------------------------------
 int DD_getType(lua_State* L) {
@@ -217,9 +252,10 @@ void bindCore(Engine& e) {
 
     static const luaL_Reg input[] = {
         {"isKeyDown", In_false}, {"isKeyUp", In_false}, {"anyKeyDown", In_false}, {"anyKeyUp", In_false},
-        {"isModifierDown", In_false}, {"isModifierUp", In_false}, {"isMouseMoving", In_false},
-        {"getMouseButton", In_false}, {"getMouseDblClick", In_false}, {"getMousePosition", In_vec2},
-        {"getMouseDelta", In_vec2}, {"getMouseWheelDelta", In_zero}, {"getTouchCount", In_zero},
+        {"isModifierDown", In_false}, {"isModifierUp", In_false}, {"isMouseMoving", In_isMouseMoving},
+        {"getMouseButton", In_getMouseButton}, {"getMouseDblClick", In_false},
+        {"getMousePosition", In_getMousePosition}, {"getMouseDelta", In_getMouseDelta},
+        {"getMouseWheelDelta", In_getMouseWheelDelta}, {"getTouchCount", In_zero},
         {nullptr, nullptr}};
     h.bindType("Input", input);
 

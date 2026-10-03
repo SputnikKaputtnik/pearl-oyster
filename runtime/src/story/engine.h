@@ -127,6 +127,34 @@ struct TimeState {
     bool errorCorrect = false;
 };
 
+// Mouse state as MOXIE::InputManager keeps it (platform record +0x40 position, +0x4c buttons,
+// +0x58 "moving"; InputManager +0x10 delta). Fed by the host once per frame.
+struct InputState {
+    float mouseX = 0, mouseY = 0;  // window pixels
+    bool buttons[3] = {};          // MB_L_BUTTON, MB_M_BUTTON, MB_R_BUTTON
+    float deltaX = 0, deltaY = 0;  // kept from the last frame with the left button held
+    bool moving = false;
+    float wheel = 0;
+
+    // InputManager::onUpdate: the delta only counts while the left button is held in this and
+    // the previous frame
+    void update(float x, float y, const bool b[3], float wheelDelta) {
+        float ox = mouseX, oy = mouseY;
+        bool oldLeft = buttons[0];
+        mouseX = x;
+        mouseY = y;
+        for (int i = 0; i < 3; ++i) buttons[i] = b[i];
+        wheel = wheelDelta;
+        if (!buttons[0] || oldLeft != buttons[0]) {
+            moving = false;
+        } else {
+            deltaX = mouseX - ox;
+            deltaY = mouseY - oy;
+            moving = true;
+        }
+    }
+};
+
 struct EngineOptions {
     std::string package = "pearl_vrcam";
     SamplingPolicy policy = SamplingPolicy::original();
@@ -147,6 +175,7 @@ public:
     const PackageFS& fs() const { return fs_; }
     const EngineOptions& options() const { return opt_; }
     TimeState& time() { return time_; }
+    InputState& input() { return input_; }
     Renderer& renderer() { return *renderer_; }
     audio::Engine& audio() { return *audio_; }
     std::shared_ptr<const audio::PcmClip> audioClip(const std::string& uri);  // decoded, cached
@@ -198,6 +227,7 @@ private:
     std::map<std::string, std::shared_ptr<const audio::PcmClip>> clips_;
     bool hrtfLoaded_ = false;
     TimeState time_;
+    InputState input_;
     RenderGraphObj* activeGraph_ = nullptr;
     std::map<std::string, std::shared_ptr<ModelResource>> models_;
     std::map<std::string, std::shared_ptr<AnimResource>> anims_;

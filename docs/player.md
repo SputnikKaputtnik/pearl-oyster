@@ -63,6 +63,12 @@ Run it with a scratch directory as working directory: the story tries to write c
 * **[I] a_texcoord1 fallback**: meshes without a second UV set feed uv0 to `a_texcoord1` (warp
   pass). The engine code would disable the attribute; the observed original output (frame that
   shows the warp pass directly: 4.87 -> 1.15) requires uv0 - mechanism on the driver side.
+* **Mouse** (InputManager::onUpdate, Lua `Input` natives FUN_1800dd0c0..dd2c0): once per frame;
+  the delta (window pixels, y down) is updated and `isMouseMoving` is true only while the left
+  button is held in this and the previous frame; vectors are pushed as Vector2 tables. The story's
+  `CameraRigController:getMouseQuat` turns left-drag into yaw/pitch (0.002 rad per pixel), as in
+  the original's desktop mode. Keyboard input is not fed (story.lua binds F5/F9 quicksave, R
+  restart, C calibrate). Headless test: `OYSTER_DEBUG_DRAG=first,dx,dy`.
 
 ## Validation (fixed step 33.3333 ms, against run07a playblast)
 
@@ -82,5 +88,5 @@ Run it with a scratch directory as working directory: the story tries to write c
 
 ## Open
 
-* Audio (AudioManager natives are logging no-ops), particles (`.mxb`), flipbooks, video cubes.
+* Particles (`.mxb`), flipbooks, video cubes (audio: see audio.md).
 * Remaster profile options (interpolation, resolution, ASW, grain toggle) on top of the player.
