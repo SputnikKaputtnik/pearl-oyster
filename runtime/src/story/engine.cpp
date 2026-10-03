@@ -112,6 +112,7 @@ bool SGNode::effectiveVisible() const {
 Engine::Engine(const PackageFS& fs, const EngineOptions& opt) : fs_(fs), opt_(opt) {
     lua_ = std::make_unique<LuaHost>(fs);
     renderer_ = std::make_unique<Renderer>(fs);
+    audio_ = std::make_unique<audio::Engine>();
     width_ = opt.width;
     height_ = opt.height;
     lua_State* L = lua_->L();
@@ -137,6 +138,7 @@ void Engine::bindAll() {
     bindCore(*this);
     bindScene(*this);
     bindRender(*this);
+    bindAudio(*this);
     lua_->finishBindings();
 }
 
@@ -228,6 +230,28 @@ void Engine::destroyNode(SGNode* node) {
     }
     if (node == mainCamera) mainCamera = nullptr;
     pendingDelete_.push_back(node);
+}
+
+std::shared_ptr<const audio::PcmClip> Engine::audioClip(const std::string& uri) {
+    auto it = clips_.find(uri);
+    if (it != clips_.end()) return it->second;
+    std::shared_ptr<const audio::PcmClip> c;
+    try {
+        c = audio::decodeVorbis(fs_.read(uri));
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "audio %s: %s\n", uri.c_str(), ex.what());
+    }
+    clips_[uri] = c;
+    return c;
+}
+
+void Engine::loadHrtf(const std::string& uri) {
+    if (hrtfLoaded_) return;
+    try {
+        hrtfLoaded_ = audio_->loadHrtf(fs_.read(uri));
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "hrtf %s: %s\n", uri.c_str(), ex.what());
+    }
 }
 
 std::shared_ptr<ModelResource> Engine::model(const std::string& uri) {

@@ -58,8 +58,10 @@ if(SDL2_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/renderer.cpp)
     src/story/bind_core.cpp
     src/story/bind_scene.cpp
     src/story/bind_render.cpp
+    src/story/bind_audio.cpp
+    src/audio/audio_engine.cpp
   )
-  target_link_libraries(oyster_story PUBLIC oyster_render luajit)
+  target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile vorbis ogg)
   add_executable(oyster_player apps/player/main.cpp)
   target_link_libraries(oyster_player PRIVATE oyster_story SDL2::SDL2main SDL2::SDL2)
 endif()

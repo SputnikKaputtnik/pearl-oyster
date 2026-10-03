@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "assets/anim.h"
+#include "audio/audio_engine.h"
 #include "assets/model.h"
 #include "core/json.h"
 #include "core/math.h"
@@ -147,6 +148,9 @@ public:
     const EngineOptions& options() const { return opt_; }
     TimeState& time() { return time_; }
     Renderer& renderer() { return *renderer_; }
+    audio::Engine& audio() { return *audio_; }
+    std::shared_ptr<const audio::PcmClip> audioClip(const std::string& uri);  // decoded, cached
+    void loadHrtf(const std::string& uri);  // first call wins (AudioSystem::setListenerHRTF)
 
     // --- object model used by the bindings ---------------------------------------------
     template <typename T> T* create(const char* type) {
@@ -190,6 +194,9 @@ private:
     EngineOptions opt_;
     std::unique_ptr<LuaHost> lua_;
     std::unique_ptr<Renderer> renderer_;
+    std::unique_ptr<audio::Engine> audio_;
+    std::map<std::string, std::shared_ptr<const audio::PcmClip>> clips_;
+    bool hrtfLoaded_ = false;
     TimeState time_;
     RenderGraphObj* activeGraph_ = nullptr;
     std::map<std::string, std::shared_ptr<ModelResource>> models_;
@@ -203,6 +210,7 @@ private:
 void bindCore(Engine& e);
 void bindScene(Engine& e);
 void bindRender(Engine& e);
+void bindAudio(Engine& e);
 Engine& engineOf(lua_State* L);
 
 // Lua table at idx -> Json (numbers, strings, booleans, nested tables; functions dropped).

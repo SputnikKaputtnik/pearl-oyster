@@ -25,11 +25,11 @@ using namespace oyster::gl;
 namespace {
 
 struct Args {
-    std::string root, package = "pearl_vrcam", out, eval, watch;
+    std::string root, package = "pearl_vrcam", out, eval, watch, wav;
     int w = 1280, h = 720, msaa = 2;
     double fixedMs = 33.3333;
     long frames = 0, dumpFrom = 0, dumpEvery = 1, status = 0;
-    bool window = false, remaster = false, log = false;
+    bool window = false, remaster = false, log = false, mute = false;
 };
 
 bool parseArgs(int argc, char** argv, Args& a) {
@@ -51,6 +51,8 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--eval") a.eval = next();
         else if (k == "--watch") a.watch = next();
         else if (k == "--status") a.status = std::stol(next());
+        else if (k == "--wav") a.wav = next();
+        else if (k == "--mute") a.mute = true;
         else {
             std::fprintf(stderr, "unknown argument %s\n", k.c_str());
             return false;
@@ -79,6 +81,31 @@ void writeTGA(const std::string& path, int w, int h, const std::vector<uint8_t>&
     }
 }
 
+// 16-bit stereo 48 kHz WAV (header patched on close)
+struct WavWriter {
+    std::ofstream f;
+    uint32_t bytes = 0;
+    explicit WavWriter(const std::string& path) : f(path, std::ios::binary) {
+        char hdr[44] = {};
+        f.write(hdr, 44);
+    }
+    void write(const int16_t* d, uint32_t frames) {
+        f.write(reinterpret_cast<const char*>(d), static_cast<std::streamsize>(frames) * 4);
+        bytes += frames * 4;
+    }
+    ~WavWriter() {
+        auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+        auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+        f.seekp(0);
+        f.write("RIFF", 4); u32(36 + bytes); f.write("WAVEfmt ", 8); u32(16); u16(1); u16(2); u32(48000);
+        u32(48000 * 4); u16(4); u16(16); f.write("data", 4); u32(bytes);
+    }
+};
+
+void audioCallback(void* user, Uint8* stream, int len) {
+    static_cast<audio::Engine*>(user)->render(reinterpret_cast<int16_t*>(stream), static_cast<uint32_t>(len / 4));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -87,7 +114,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: oyster_player --root <install> [--frames N] [--out dir/%%05d.tga] [--window]\n");
         return 2;
     }
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) { std::fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) { std::fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -116,6 +143,27 @@ int main(int argc, char** argv) {
         std::printf("story booted\n");
         if (!args.eval.empty()) engine.lua().doString(args.eval, "=eval");
 
+        // Audio: real time through SDL (48 kHz, s16 stereo, 512-frame blocks like the original),
+        // or rendered in lockstep with story time into a WAV file (--wav)
+        SDL_AudioDeviceID dev = 0;
+        std::unique_ptr<WavWriter> wav;
+        uint64_t wavFrames = 0;
+        if (!args.wav.empty()) {
+            wav = std::make_unique<WavWriter>(args.wav);
+        } else if (!args.mute) {
+            SDL_AudioSpec want{}, have{};
+            want.freq = audio::Engine::kRate;
+            want.format = AUDIO_S16SYS;
+            want.channels = 2;
+            want.samples = audio::Engine::kBlock;
+            want.callback = audioCallback;
+            want.userdata = &engine.audio();
+            dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+            if (!dev) std::fprintf(stderr, "audio device: %s\n", SDL_GetError());
+            else SDL_PauseAudioDevice(dev, 0);
+        }
+        std::vector<int16_t> wavBuf;
+
         std::vector<uint8_t> px;
         auto last = std::chrono::steady_clock::now();
         size_t logShown = 0;
@@ -131,6 +179,16 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "frame %ld: lua error\n", f);
                 rc = 1;
                 break;
+            }
+            if (wav) {
+                uint64_t target = static_cast<uint64_t>(engine.time().elapsedUs) * 48000 / 1000000;
+                if (target > wavFrames) {
+                    uint32_t n = static_cast<uint32_t>(target - wavFrames);
+                    wavBuf.resize(static_cast<size_t>(n) * 2);
+                    engine.audio().render(wavBuf.data(), n);
+                    wav->write(wavBuf.data(), n);
+                    wavFrames = target;
+                }
             }
             // state transitions as logged by FSM:onTransition ("[old]->[new]")
             const auto& log = engine.lua().log;
@@ -171,6 +229,7 @@ print(s))lua", "=status");
             }
             if (engine.exitRequested) break;
         }
+        if (dev) SDL_CloseAudioDevice(dev);
         std::printf("frames: %llu, story time %.3f s\n", static_cast<unsigned long long>(engine.frameIndex),
                     static_cast<double>(engine.time().elapsedUs) * 1e-6);
         std::printf("unimplemented original natives called:\n");
