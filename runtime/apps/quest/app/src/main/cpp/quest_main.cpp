@@ -112,6 +112,8 @@ struct App {
     XrSystemId system = XR_NULL_SYSTEM_ID;
     XrSession session = XR_NULL_HANDLE;
     XrSpace space = XR_NULL_HANDLE;
+    XrSpace viewSpace = XR_NULL_HANDLE;  // head-locked overlay (shader warm-up message)
+    Swapchain overlay;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool running = false;
     std::vector<XrViewConfigurationView> configViews;
@@ -120,6 +122,7 @@ struct App {
     // engine
     std::unique_ptr<PackageFS> fs;
     std::unique_ptr<story::Engine> engine;
+    bool warmup = false;  // shaders are being prepared before the story boots
     bool engineFailed = false;
     XrTime lastDisplayTime = 0;
     AAudioStream* audio = nullptr;
@@ -298,7 +301,97 @@ bool initXr(App& a) {
         bool gpu = xrOk("perf level GPU", setLevel(a.session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));
         LOGI("performance level sustained high: CPU %d GPU %d", cpu, gpu);
     }
+    XrReferenceSpaceCreateInfo vs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    vs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    vs.poseInReferenceSpace.orientation.w = 1;
+    xrOk("xrCreateReferenceSpace(VIEW)", xrCreateReferenceSpace(a.session, &vs, &a.viewSpace));
     return createSwapchains(a);
+}
+
+// ---- warm-up overlay: "COMPILING SHADERS nn%" and a progress bar, drawn with scissored clears
+// (no shaders needed while the shaders are being built) into a head-locked quad layer.
+constexpr int kOverlayW = 1024, kOverlayH = 256;
+
+const uint8_t* glyph(char c) {
+    static const struct { char c; uint8_t rows[7]; } font[] = {
+        {'C', {14, 17, 16, 16, 16, 17, 14}}, {'O', {14, 17, 17, 17, 17, 17, 14}}, {'M', {17, 27, 21, 21, 17, 17, 17}},
+        {'P', {30, 17, 17, 30, 16, 16, 16}}, {'I', {14, 4, 4, 4, 4, 4, 14}},      {'L', {16, 16, 16, 16, 16, 16, 31}},
+        {'N', {17, 25, 21, 19, 17, 17, 17}}, {'G', {14, 17, 16, 23, 17, 17, 15}}, {'S', {15, 16, 16, 14, 1, 1, 30}},
+        {'H', {17, 17, 17, 31, 17, 17, 17}}, {'A', {14, 17, 17, 31, 17, 17, 17}}, {'D', {30, 17, 17, 17, 17, 17, 30}},
+        {'E', {31, 16, 16, 30, 16, 16, 31}}, {'R', {30, 17, 17, 30, 20, 18, 17}}, {'0', {14, 17, 19, 21, 25, 17, 14}},
+        {'1', {4, 12, 4, 4, 4, 4, 14}},      {'2', {14, 17, 1, 2, 4, 8, 31}},     {'3', {30, 1, 1, 14, 1, 1, 30}},
+        {'4', {2, 6, 10, 18, 31, 2, 2}},     {'5', {31, 16, 30, 1, 1, 17, 14}},   {'6', {6, 8, 16, 30, 17, 17, 14}},
+        {'7', {31, 1, 2, 4, 8, 8, 8}},       {'8', {14, 17, 17, 14, 17, 17, 14}}, {'9', {14, 17, 17, 15, 1, 2, 12}},
+        {'%', {25, 26, 2, 4, 8, 11, 19}},    {'.', {0, 0, 0, 0, 0, 12, 12}},
+    };
+    for (const auto& g : font)
+        if (g.c == c) return g.rows;
+    return nullptr;
+}
+
+bool createOverlay(App& a) {
+    Swapchain& s = a.overlay;
+    XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    ci.format = GL_RGBA8;
+    ci.sampleCount = 1;
+    ci.width = kOverlayW;
+    ci.height = kOverlayH;
+    ci.faceCount = ci.arraySize = ci.mipCount = 1;
+    if (!xrOk("xrCreateSwapchain(overlay)", xrCreateSwapchain(a.session, &ci, &s.handle))) return false;
+    s.width = kOverlayW;
+    s.height = kOverlayH;
+    uint32_t ic = 0;
+    xrEnumerateSwapchainImages(s.handle, 0, &ic, nullptr);
+    s.images.assign(ic, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+    xrEnumerateSwapchainImages(s.handle, ic, &ic, reinterpret_cast<XrSwapchainImageBaseHeader*>(s.images.data()));
+    s.fbos.resize(ic);
+    glGenFramebuffers(static_cast<GLsizei>(ic), s.fbos.data());
+    for (uint32_t i = 0; i < ic; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, s.fbos[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.images[i].image, 0);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return true;
+}
+
+void drawOverlay(App& a, float progress) {
+    Swapchain& s = a.overlay;
+    uint32_t idx = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    xrAcquireSwapchainImage(s.handle, &ai, &idx);
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    xrWaitSwapchainImage(s.handle, &wi);
+    glBindFramebuffer(GL_FRAMEBUFFER, s.fbos[idx]);
+    glViewport(0, 0, s.width, s.height);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    auto rect = [&](int x, int y, int w, int h, float r, float g, float b) {
+        glScissor(x, y, w, h);
+        glClearColor(r, g, b, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    };
+    char text[48];
+    std::snprintf(text, sizeof(text), "COMPILING SHADERS %d%%", static_cast<int>(progress * 100.0f + 0.5f));
+    const int px = 5;  // screen pixels per font pixel
+    int len = static_cast<int>(std::strlen(text));
+    int x0 = (s.width - len * 6 * px) / 2, top = s.height - 60;
+    for (int i = 0; i < len; ++i)
+        if (const uint8_t* rows = glyph(text[i]))
+            for (int r = 0; r < 7; ++r)
+                for (int c = 0; c < 5; ++c)
+                    if (rows[r] & (16 >> c)) rect(x0 + (i * 6 + c) * px, top - (r + 1) * px, px, px, 0.92f, 0.92f, 0.92f);
+    int bx = 112, bw = s.width - 224, by = 50, bh = 24;
+    rect(bx, by, bw, bh, 0.25f, 0.25f, 0.28f);
+    rect(bx, by, static_cast<int>(static_cast<float>(bw) * progress), bh, 0.92f, 0.92f, 0.92f);
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(s.handle, &ri);
 }
 
 void startEngine(App& a) {
@@ -311,7 +404,7 @@ void startEngine(App& a) {
         opt.width = a.swapchains[0].width;
         opt.height = a.swapchains[0].height;
         opt.msaa = 2;  // the Steam build's -msaa 2
-        opt.precompileShaders = true;  // no shader compiles while the story plays
+        opt.precompileShaders = false;  // done frame by frame with an overlay (warm-up), see frame()
         opt.shaderCacheDir = files + "/shadercache";
         std::filesystem::create_directories(opt.shaderCacheDir);
         a.engine = std::make_unique<story::Engine>(*a.fs, opt);
@@ -322,8 +415,23 @@ void startEngine(App& a) {
         h.position = Vec3(0, 1.2f, 0);
         a.engine->renderer().setTextureBudget(kTextureBudget);
         a.engine->time().fixedStepMs = 0;  // real time
+        // every shader is built before the story starts (no compiles while it plays); from the
+        // binary cache after the first start
+        a.engine->renderer().beginPrecompile();
+        a.warmup = true;
+        if (!a.overlay.handle) createOverlay(a);
+        LOGI("engine created, data %s; preparing %zu shaders", root.c_str(), a.engine->renderer().precompileTotal());
+    } catch (const std::exception& e) {
+        LOGE("engine start failed: %s (Pearl data expected in %s)", e.what(), root.c_str());
+        a.engine.reset();
+        a.engineFailed = true;
+    }
+}
+
+void bootStory(App& a) {
+    try {
         if (!a.engine->boot()) throw std::runtime_error("story boot failed: " + a.engine->lua().lastError());
-        LOGI("story booted from %s", root.c_str());
+        LOGI("story booted (%zu shaders from the binary cache)", a.engine->renderer().programsFromCache);
         AAudioStreamBuilder* b = nullptr;
         if (AAudio_createStreamBuilder(&b) == AAUDIO_OK) {
             AAudioStreamBuilder_setSampleRate(b, audio::Engine::kRate);
@@ -336,7 +444,7 @@ void startEngine(App& a) {
         }
         if (!a.audio) LOGE("AAudio stream could not be opened");
     } catch (const std::exception& e) {
-        LOGE("engine start failed: %s (Pearl data expected in %s)", e.what(), root.c_str());
+        LOGE("story start failed: %s", e.what());
         a.engine.reset();
         a.engineFailed = true;
     }
@@ -379,6 +487,33 @@ void frame(App& a) {
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
     bool focused = a.state == XR_SESSION_STATE_FOCUSED;
+
+    if (a.engine && a.warmup) {
+        // shader warm-up: about 8 ms of compiling per frame, progress on a head-locked panel
+        bool done = a.engine->renderer().precompileStep(8.0);
+        XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+        const XrCompositionLayerBaseHeader* ql[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad)};
+        if (fs.shouldRender && a.overlay.handle && a.viewSpace) {
+            size_t total = std::max<size_t>(1, a.engine->renderer().precompileTotal());
+            drawOverlay(a, static_cast<float>(a.engine->renderer().precompileDone()) / static_cast<float>(total));
+            quad.space = a.viewSpace;
+            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            quad.subImage.swapchain = a.overlay.handle;
+            quad.subImage.imageRect.extent = {a.overlay.width, a.overlay.height};
+            quad.pose.orientation.w = 1;
+            quad.pose.position = {0.0f, 0.0f, -1.5f};
+            quad.size = {0.8f, 0.2f};
+            ei.layerCount = 1;
+            ei.layers = ql;
+        }
+        xrEndFrame(a.session, &ei);
+        if (done) {
+            a.warmup = false;
+            LOGI("shaders ready");
+            bootStory(a);
+        }
+        return;
+    }
     setAudio(a, focused && a.engine);
 
     if (fs.shouldRender && a.engine) {

@@ -108,6 +108,12 @@ public:
     // builds every shader of the package up front so the story never waits for the compiler.
     void setShaderCache(const std::string& dir) { shaderCacheDir_ = dir; }
     size_t precompileAll();
+    // the same, spread over frames: beginPrecompile() queues every shader, precompileStep()
+    // builds shaders until `budgetMs` is used and returns true when all are ready
+    void beginPrecompile();
+    bool precompileStep(double budgetMs);
+    size_t precompileDone() const { return precompileNext_; }
+    size_t precompileTotal() const { return precompileList_.size(); }
     size_t programsFromCache = 0;
 
 private:
@@ -178,6 +184,8 @@ private:
 
     const PackageFS& fs_;
     std::string shaderCacheDir_;
+    std::vector<std::string> precompileList_;
+    size_t precompileNext_ = 0;
     bool linkProgram(Program& p, const std::string& key, const std::vector<uint8_t>& source);
     std::unordered_map<std::string, GLuint> textures_;
     std::unordered_map<std::string, std::pair<int, int>> textureSizes_;

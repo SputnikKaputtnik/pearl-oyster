@@ -308,6 +308,20 @@ size_t Renderer::precompileAll() {
     return n;
 }
 
+void Renderer::beginPrecompile() {
+    precompileList_ = fs_.list(".shd");
+    precompileNext_ = 0;
+}
+
+bool Renderer::precompileStep(double budgetMs) {
+    double t0 = cpuMs();
+    while (precompileNext_ < precompileList_.size()) {
+        program(precompileList_[precompileNext_++]);
+        if (cpuMs() - t0 >= budgetMs) break;
+    }
+    return precompileNext_ >= precompileList_.size();
+}
+
 // Links p from the cached binary if one matches this source and driver, else compiles the
 // GLSL and stores the binary. Attribute bindings are part of the binary.
 bool Renderer::linkProgram(Program& p, const std::string& key, const std::vector<uint8_t>& source) {
