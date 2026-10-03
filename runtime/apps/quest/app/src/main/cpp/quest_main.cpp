@@ -18,7 +18,9 @@
 #include <openxr/openxr_platform.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +54,9 @@ namespace {
 constexpr char kTag[] = "OysterPearl";
 constexpr XrViewConfigurationType kViewConfig = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 constexpr size_t kTextureBudget = size_t(1024) << 20;  // decoded textures kept resident
+// Eye image size = the runtime's recommended size (1680x1760 on Quest 3) times this; the
+// original's SteamVR eye targets were 2612x2852. Measured with the self test (README.md).
+constexpr float kDefaultResolutionScale = 1.3f;  // 2184x2288: heaviest shot 9.2 ms (self test)
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, kTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kTag, __VA_ARGS__)
@@ -132,6 +137,15 @@ struct App {
     double statMs = 0, statMax = 0;
     int statFrames = 0;
     gl::threaded::Stats statThread;  // render thread totals at the last perf line
+    // settings (/sdcard/Oyster/oyster.cfg)
+    float resolutionScale = kDefaultResolutionScale;
+    bool interpolate = false;  // remaster: interpolate the original's stepped animation keys
+    int msaa = 2;
+    // controller: A (right) / X (left) toggles the animation interpolation
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrAction toggleAction = XR_NULL_HANDLE;
+    std::string notice;       // shown on a head-locked panel for a moment
+    XrTime noticeUntil = 0;
 };
 
 // Pearl data: shared storage /sdcard/Oyster/pearl (adb-pushed, needs "all files access"), else
@@ -215,8 +229,9 @@ bool createSwapchains(App& a) {
         ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
         ci.format = format;
         ci.sampleCount = 1;
-        ci.width = a.configViews[e].recommendedImageRectWidth;
-        ci.height = a.configViews[e].recommendedImageRectHeight;
+        const XrViewConfigurationView& cv = a.configViews[e];
+        ci.width = std::min(cv.maxImageRectWidth, static_cast<uint32_t>(std::lround(cv.recommendedImageRectWidth * a.resolutionScale)));
+        ci.height = std::min(cv.maxImageRectHeight, static_cast<uint32_t>(std::lround(cv.recommendedImageRectHeight * a.resolutionScale)));
         ci.faceCount = 1;
         ci.arraySize = 1;
         ci.mipCount = 1;
@@ -239,6 +254,96 @@ bool createSwapchains(App& a) {
     LOGI("swapchains %dx%d per eye, format 0x%llx", a.swapchains[0].width, a.swapchains[0].height,
          static_cast<unsigned long long>(format));
     return true;
+}
+
+// /sdcard/Oyster/oyster.cfg: "key = value" lines, # comments; written with the defaults when missing.
+void loadConfig(App& a) {
+    std::string path = std::string(kSharedRoot) + "/oyster.cfg";
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        if (std::FILE* w = std::fopen(path.c_str(), "wb")) {
+            std::fprintf(w,
+                         "# Oyster - Pearl settings (read at start)\n"
+                         "# eye image size = the headset's recommended size x resolution_scale (0.5 .. 2.0)\n"
+                         "resolution_scale = %.2f\n"
+                         "# animation: original (stepped keys as authored) or interpolated (remaster);\n"
+                         "# the A / X controller button switches it while the story plays\n"
+                         "animation = original\n"
+                         "# multisampling of the eye images: 1, 2 (the original's -msaa 2) or 4\n"
+                         "msaa = 2\n",
+                         kDefaultResolutionScale);
+            std::fclose(w);
+        }
+    } else {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            std::string l(line);
+            size_t hash = l.find('#');
+            if (hash != std::string::npos) l.erase(hash);
+            size_t eq = l.find('=');
+            if (eq == std::string::npos) continue;
+            auto trim = [](std::string s) {
+                while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+                while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(0, 1);
+                return s;
+            };
+            std::string k = trim(l.substr(0, eq)), v = trim(l.substr(eq + 1));
+            if (k == "resolution_scale") a.resolutionScale = std::max(0.5f, std::min(2.0f, std::strtof(v.c_str(), nullptr)));
+            else if (k == "animation") a.interpolate = v == "interpolated";
+            else if (k == "msaa") a.msaa = std::max(1, std::min(4, std::atoi(v.c_str())));
+        }
+        std::fclose(f);
+    }
+    LOGI("settings: resolution_scale %.2f, animation %s, msaa %d", a.resolutionScale,
+         a.interpolate ? "interpolated" : "original", a.msaa);
+}
+
+// Controller button A (right) / X (left): toggles the animation interpolation.
+void createActions(App& a) {
+    XrActionSetCreateInfo si{XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::snprintf(si.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "oyster");
+    std::snprintf(si.localizedActionSetName, XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE, "Oyster");
+    if (!xrOk("xrCreateActionSet", xrCreateActionSet(a.instance, &si, &a.actionSet))) return;
+    XrActionCreateInfo ac{XR_TYPE_ACTION_CREATE_INFO};
+    ac.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    std::snprintf(ac.actionName, XR_MAX_ACTION_NAME_SIZE, "toggle_interpolation");
+    std::snprintf(ac.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "Toggle animation interpolation");
+    if (!xrOk("xrCreateAction", xrCreateAction(a.actionSet, &ac, &a.toggleAction))) return;
+    XrPath profile = XR_NULL_PATH, aButton = XR_NULL_PATH, xButton = XR_NULL_PATH;
+    xrStringToPath(a.instance, "/interaction_profiles/oculus/touch_controller", &profile);
+    xrStringToPath(a.instance, "/user/hand/right/input/a/click", &aButton);
+    xrStringToPath(a.instance, "/user/hand/left/input/x/click", &xButton);
+    XrActionSuggestedBinding b[] = {{a.toggleAction, aButton}, {a.toggleAction, xButton}};
+    XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    sb.interactionProfile = profile;
+    sb.suggestedBindings = b;
+    sb.countSuggestedBindings = 2;
+    xrOk("xrSuggestInteractionProfileBindings", xrSuggestInteractionProfileBindings(a.instance, &sb));
+    XrSessionActionSetsAttachInfo at{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    at.countActionSets = 1;
+    at.actionSets = &a.actionSet;
+    xrOk("xrAttachSessionActionSets", xrAttachSessionActionSets(a.session, &at));
+}
+
+// Engine thread, once per frame while focused.
+void pollActions(App& a, XrTime now) {
+    if (!a.toggleAction || !a.engine) return;
+    XrActiveActionSet active{a.actionSet, XR_NULL_PATH};
+    XrActionsSyncInfo sy{XR_TYPE_ACTIONS_SYNC_INFO};
+    sy.countActiveActionSets = 1;
+    sy.activeActionSets = &active;
+    if (XR_FAILED(xrSyncActions(a.session, &sy))) return;
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a.toggleAction;
+    XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+    if (XR_FAILED(xrGetActionStateBoolean(a.session, &gi, &st))) return;
+    if (!(st.isActive && st.changedSinceLastSync && st.currentState)) return;
+    a.interpolate = !a.interpolate;
+    SamplingPolicy& p = a.engine->policy();
+    p = a.interpolate ? SamplingPolicy::remaster() : SamplingPolicy::original();
+    a.notice = a.interpolate ? "ANIMATION INTERPOLATED" : "ANIMATION ORIGINAL";
+    a.noticeUntil = now + 2000000000;  // 2 s
+    LOGI("animation %s", a.interpolate ? "interpolated" : "original");
 }
 
 bool initXr(App& a) {
@@ -270,6 +375,7 @@ bool initXr(App& a) {
     XrSystemGetInfo si{XR_TYPE_SYSTEM_GET_INFO};
     si.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (!xrOk("xrGetSystem", xrGetSystem(a.instance, &si, &a.system))) return false;
+    loadConfig(a);
     PFN_xrGetOpenGLESGraphicsRequirementsKHR req = nullptr;
     xrGetInstanceProcAddr(a.instance, "xrGetOpenGLESGraphicsRequirementsKHR", reinterpret_cast<PFN_xrVoidFunction*>(&req));
     XrGraphicsRequirementsOpenGLESKHR gr{XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};
@@ -307,6 +413,7 @@ bool initXr(App& a) {
     vs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     vs.poseInReferenceSpace.orientation.w = 1;
     xrOk("xrCreateReferenceSpace(VIEW)", xrCreateReferenceSpace(a.session, &vs, &a.viewSpace));
+    createActions(a);
     return createSwapchains(a);
 }
 
@@ -324,7 +431,8 @@ const uint8_t* glyph(char c) {
         {'1', {4, 12, 4, 4, 4, 4, 14}},      {'2', {14, 17, 1, 2, 4, 8, 31}},     {'3', {30, 1, 1, 14, 1, 1, 30}},
         {'4', {2, 6, 10, 18, 31, 2, 2}},     {'5', {31, 16, 30, 1, 1, 17, 14}},   {'6', {6, 8, 16, 30, 17, 17, 14}},
         {'7', {31, 1, 2, 4, 8, 8, 8}},       {'8', {14, 17, 17, 14, 17, 17, 14}}, {'9', {14, 17, 17, 15, 1, 2, 12}},
-        {'%', {25, 26, 2, 4, 8, 11, 19}},    {'.', {0, 0, 0, 0, 0, 12, 12}},
+        {'%', {25, 26, 2, 4, 8, 11, 19}},    {'.', {0, 0, 0, 0, 0, 12, 12}},   {'T', {31, 4, 4, 4, 4, 4, 4}},
+        {'F', {31, 16, 16, 30, 16, 16, 16}}, {'U', {17, 17, 17, 17, 17, 17, 14}}, {'X', {17, 17, 10, 4, 10, 17, 17}},
     };
     for (const auto& g : font)
         if (g.c == c) return g.rows;
@@ -357,7 +465,7 @@ bool createOverlay(App& a) {
     return true;
 }
 
-void drawOverlay(App& a, float progress) {
+void drawOverlay(App& a, const char* text, float progress) {
     Swapchain& s = a.overlay;
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -377,19 +485,19 @@ void drawOverlay(App& a, float progress) {
         glClearColor(r, g, b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
     };
-    char text[48];
-    std::snprintf(text, sizeof(text), "COMPILING SHADERS %d%%", static_cast<int>(progress * 100.0f + 0.5f));
     const int px = 5;  // screen pixels per font pixel
     int len = static_cast<int>(std::strlen(text));
-    int x0 = (s.width - len * 6 * px) / 2, top = s.height - 60;
+    int x0 = (s.width - len * 6 * px) / 2, top = progress < 0 ? (s.height + 7 * px) / 2 : s.height - 60;
     for (int i = 0; i < len; ++i)
         if (const uint8_t* rows = glyph(text[i]))
             for (int r = 0; r < 7; ++r)
                 for (int c = 0; c < 5; ++c)
                     if (rows[r] & (16 >> c)) rect(x0 + (i * 6 + c) * px, top - (r + 1) * px, px, px, 0.92f, 0.92f, 0.92f);
-    int bx = 112, bw = s.width - 224, by = 50, bh = 24;
-    rect(bx, by, bw, bh, 0.25f, 0.25f, 0.28f);
-    rect(bx, by, static_cast<int>(static_cast<float>(bw) * progress), bh, 0.92f, 0.92f, 0.92f);
+    if (progress >= 0) {  // progress bar
+        int bx = 112, bw = s.width - 224, by = 50, bh = 24;
+        rect(bx, by, bw, bh, 0.25f, 0.25f, 0.28f);
+        rect(bx, by, static_cast<int>(static_cast<float>(bw) * progress), bh, 0.92f, 0.92f, 0.92f);
+    }
     glDisable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -405,7 +513,8 @@ void startEngine(App& a) {
         story::EngineOptions opt;
         opt.width = a.swapchains[0].width;
         opt.height = a.swapchains[0].height;
-        opt.msaa = 2;  // the Steam build's -msaa 2
+        opt.msaa = a.msaa;  // default 2: the Steam build's -msaa 2
+        opt.policy = a.interpolate ? SamplingPolicy::remaster() : SamplingPolicy::original();
         opt.precompileShaders = false;  // done frame by frame with an overlay (warm-up), see frame()
         opt.shaderCacheDir = files + "/shadercache";
         opt.prefetchHints = root + "/../prefetch_hints.txt";  // learned prefetch, next to the data
@@ -528,6 +637,7 @@ struct FrameOut {
     XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
     GLuint srcFbo[2] = {};
     int srcW[2] = {}, srcH[2] = {};
+    std::string notice;  // head-locked panel text (empty: none)
 };
 
 // Render thread: eye images into the swapchains, then xrEndFrame.
@@ -538,7 +648,9 @@ void submitFrame(App& a, const FrameOut& o) {
     XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                              {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
+    XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer),
+                                                    reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad)};
     if (o.render) {
         for (int e = 0; e < 2; ++e) {
             Swapchain& s = a.swapchains[e];
@@ -568,6 +680,17 @@ void submitFrame(App& a, const FrameOut& o) {
         layer.views = pv;
         ei.layerCount = 1;
         ei.layers = layers;
+        if (!o.notice.empty() && a.overlay.handle && a.viewSpace) {
+            drawOverlay(a, o.notice.c_str(), -1.0f);
+            quad.space = a.viewSpace;
+            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            quad.subImage.swapchain = a.overlay.handle;
+            quad.subImage.imageRect.extent = {a.overlay.width, a.overlay.height};
+            quad.pose.orientation.w = 1;
+            quad.pose.position = {0.0f, -0.25f, -1.5f};
+            quad.size = {0.8f, 0.2f};
+            ei.layerCount = 2;
+        }
     }
     xrEndFrame(a.session, &ei);
 }
@@ -589,6 +712,8 @@ void frameThreaded(App& a) {
     out->displayTime = fs.predictedDisplayTime;
     bool focused = a.state == XR_SESSION_STATE_FOCUSED;
     setAudio(a, focused && a.engine);
+    if (focused) pollActions(a, fs.predictedDisplayTime);
+    if (fs.predictedDisplayTime < a.noticeUntil) out->notice = a.notice;
     double frameMs = 0;
     if (fs.shouldRender && a.engine) {
         XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
@@ -661,7 +786,10 @@ void frame(App& a) {
         const XrCompositionLayerBaseHeader* ql[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad)};
         if (fs.shouldRender && a.overlay.handle && a.viewSpace) {
             size_t total = std::max<size_t>(1, a.engine->renderer().precompileTotal());
-            drawOverlay(a, static_cast<float>(a.engine->renderer().precompileDone()) / static_cast<float>(total));
+            float progress = static_cast<float>(a.engine->renderer().precompileDone()) / static_cast<float>(total);
+            char text[48];
+            std::snprintf(text, sizeof(text), "COMPILING SHADERS %d%%", static_cast<int>(progress * 100.0f + 0.5f));
+            drawOverlay(a, text, progress);
             quad.space = a.viewSpace;
             quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
             quad.subImage.swapchain = a.overlay.handle;

@@ -215,6 +215,7 @@ public:
     TimeState& time() { return time_; }
     InputState& input() { return input_; }
     HmdState& hmd() { return hmd_; }
+    SamplingPolicy& policy() { return opt_.policy; }  // may change between frames (remaster toggle)
     float ipdScalar = 1.0f;  // DisplayDevice.setInterpupillaryDistanceScalar (display +0x24)
     float fovScalar = 1.0f;  // DisplayDevice.setFovScalar (display +0x20)
     const RenderTarget* eyeOutput(int eye) const;  // stereo frame of the active graph

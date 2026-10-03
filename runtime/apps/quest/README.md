@@ -69,6 +69,23 @@ height); the tracking origin is the floor (LOCAL_FLOOR).
   the call order, so the images are identical to single-threaded rendering (verified on the
   desktop player with `--threaded`). The flag file `/sdcard/Oyster/singlethread` disables it.
 
+## Settings
+
+`/sdcard/Oyster/oyster.cfg` (written with the defaults on the first start, read at start):
+
+```
+resolution_scale = 1.30   # eye image = recommended size (1680x1760 on Quest 3) x this (default 1.3 = 2184x2288)
+animation = original      # or: interpolated (remaster: the authored stepped keys interpolated)
+msaa = 2                  # 1, 2 (the original's -msaa 2) or 4
+```
+
+While the story plays, controller button **A** (right) or **X** (left) switches the animation
+between original and interpolated; a panel shows the new mode for two seconds.
+
+Shot changes: textures and mesh buffers of the models the story prefetches are uploaded in the
+frames before they are needed. Resources the story loads without announcing them (or announces
+too late) are learned in `/sdcard/Oyster/prefetch_hints.txt` and prefetched on later runs.
+
 ## Self test (no headset needed)
 
 `oyster_selftest` (built with the Android CMake build, see `apps/android_selftest`) runs the story
