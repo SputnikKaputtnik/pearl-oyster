@@ -101,16 +101,62 @@ int main(int argc, char** argv) {
         double budget = 1000.0 / hz, sum = 0, mx = 0, all = 0;
         int cnt = 0, over = 0, overAll = 0;
         size_t logShown = 0;
+        // per story state: CPU time (engine frame), GPU wait (glFinish after it), and the frame time
+        // a pipelined app would see, max(CPU, GPU) - CPU and GPU overlap there
+        struct StateStat {
+            std::string name;
+            int frames = 0, over = 0;
+            double cpu = 0, gpu = 0, piped = 0, worst = 0;
+        };
+        std::vector<StateStat> states(1);
+        states[0].name = "(start)";
+        // OYSTER_SKIP_TO=<state>: run the story without rendering until that state is entered
+        if (const char* skipTo = std::getenv("OYSTER_SKIP_TO")) {
+            engine.skipRender = true;
+            double s0 = nowMs();
+            int n = 0;
+            bool reached = false;
+            while (!reached && !engine.exitRequested && n < 200000) {
+                engine.frame(0);
+                ++n;
+                const auto& log = engine.lua().log;
+                for (; logShown < log.size(); ++logShown)
+                    if (log[logShown].find(std::string("->[") + skipTo + "]") != std::string::npos) reached = true;
+            }
+            engine.skipRender = false;
+            states.back().name = skipTo;
+            std::printf("skipped %d frames to %s in %.0f ms\n", n, skipTo, nowMs() - s0);
+        }
         for (int i = 0; i < frames && !engine.exitRequested; ++i) {
             size_t loads = rr.texLoads;
             double tex = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs;
             double f0 = nowMs();
             if (!engine.frame(0)) std::printf("frame %d: Lua error\n", i);
+            double f1 = nowMs();
             glFinish();
             double ms = nowMs() - f0;
+            double cpuMs = f1 - f0, gpuWait = ms - cpuMs;
+            StateStat& st = states.back();
+            ++st.frames;
+            st.cpu += cpuMs;
+            st.gpu += gpuWait;
+            double piped = std::max(cpuMs, ms);  // GPU work >= the time we waited for it after submission
+            piped = std::max(cpuMs, gpuWait + 0.0);
+            st.piped += std::max(cpuMs, ms - cpuMs > 0 ? ms - cpuMs : 0.0);
+            st.worst = std::max(st.worst, ms);
+            if (std::max(cpuMs, gpuWait) > budget) ++st.over;
+            (void)piped;
             const auto& log = engine.lua().log;
-            for (; logShown < log.size(); ++logShown)
-                if (log[logShown].find("]->[") != std::string::npos) std::printf("frame %d  %s\n", i, log[logShown].c_str() + 9);
+            for (; logShown < log.size(); ++logShown) {
+                const std::string& l = log[logShown];
+                size_t arrow = l.find("]->[");
+                if (arrow == std::string::npos) continue;
+                std::printf("frame %d  %s\n", i, l.c_str() + 9);
+                std::string dest = l.substr(arrow + 4, l.find(']', arrow + 4) - arrow - 4);
+                if (dest.rfind("AudioTest", 0) == 0 || dest == "Preload") continue;
+                states.push_back(StateStat());
+                states.back().name = dest;
+            }
             if (ms > 2 * budget)
                 std::printf("slow frame %d: %.1f ms (%zu texture loads %.1f ms)\n", i, ms, rr.texLoads - loads,
                             rr.texReadMs + rr.texDecodeMs + rr.texUploadMs - tex);
@@ -129,6 +175,15 @@ int main(int argc, char** argv) {
                 rr.texLoads = 0;
             }
         }
+        std::printf("\n%-34s %7s %8s %8s %9s %9s %6s\n", "state", "frames", "CPU ms", "GPU ms", "frame ms", "max ms", "over");
+        for (const StateStat& st : states) {
+            if (!st.frames) continue;
+            double n = st.frames;
+            std::printf("%-34s %7d %8.2f %8.2f %9.2f %9.1f %5.0f%%\n", st.name.c_str(), st.frames, st.cpu / n, st.gpu / n,
+                        st.piped / n, st.worst, 100.0 * st.over / n);
+        }
+        std::printf("(GPU ms = wait for the GPU after the CPU work; frame ms = max(CPU, GPU), the pipelined frame time;\n"
+                    " over = frames whose CPU or GPU part exceeds %.1f ms)\n", budget);
         std::printf("done: %llu frames, story time %.1f s, average %.2f ms per frame, %d frames over budget\n",
                     static_cast<unsigned long long>(engine.frameIndex), static_cast<double>(engine.time().elapsedUs) * 1e-6,
                     all / static_cast<double>(std::max<uint64_t>(1, engine.frameIndex)), overAll);

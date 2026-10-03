@@ -101,6 +101,13 @@ public:
         ShaderFile meta;
         std::vector<GLint> loc;  // per uniform of meta.uniforms
         bool ok = false;
+        // last value uploaded per uniform location (uniform values are program state in GL, so an
+        // unchanged value need not be sent again); up to 16 floats, ints stored bitwise
+        struct Cached {
+            int n = -1;
+            float v[16];
+        };
+        std::vector<Cached> ucache;
     };
     Program* program(const std::string& uri);
     // Shader programs: compiled on first use; with a cache directory the driver's program
@@ -143,6 +150,10 @@ private:
     static void freeMesh(GpuMesh& g);
     void applyRenderState(const RenderState& s);
     void useProgram(GLuint id);
+    bool uniformUnchanged(Program& p, GLint loc, const void* data, int n);
+    void bindTexture(int unit, GLuint tex);
+    GLuint boundTex_[32] = {};
+    bool texBindValid_ = false;
     struct TexUse;
     // Per (instance, mesh, submesh, pass): everything executeDraw would otherwise look up by name
     // on every draw - program, uniform locations, texture objects, which parameters animation

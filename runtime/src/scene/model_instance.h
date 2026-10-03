@@ -59,6 +59,7 @@ public:
     // binds channels per material, all passes see the value); mask = components set.
     // Render-graph parameters (customA == 1) are stored under (0, param, 0).
     bool materialOverride(uint32_t materialHash, uint32_t paramHash, uint32_t pass, float out[4], uint32_t* mask) const;
+    bool hasMaterialOverrides() const { return !params_.empty(); }
     // Last sampled value of a custom attribute channel (customA == 1) on the track of `node`
     // (SGAnimator::sampleCustomAnimations; e.g. "color"/"range"/"angle"/"wrap" of attached lights).
     bool nodeCustom(int node, uint32_t attrHash, float out[4], uint32_t* mask) const;

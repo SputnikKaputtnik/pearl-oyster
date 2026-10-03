@@ -243,6 +243,7 @@ GLuint Renderer::texture(const std::string& uri) {
         tl0 = tl1;
         textureSizes_[uri] = {static_cast<int>(d.width), static_cast<int>(d.height)};
         glGenTextures(1, &t);
+        texBindValid_ = false;
         glBindTexture(GL_TEXTURE_2D, t);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         // DXT5 without S3TC support (Quest/Adreno), or forced for testing: lossless CPU decode.
@@ -484,6 +485,29 @@ bool sameState(const RenderState& a, const RenderState& b) {
 }
 }  // namespace
 
+bool Renderer::uniformUnchanged(Program& p, GLint loc, const void* data, int n) {
+    if (loc < 0 || n > 16) return false;
+    size_t i = static_cast<size_t>(loc);
+    if (i >= p.ucache.size()) p.ucache.resize(i + 1);
+    Program::Cached& c = p.ucache[i];
+    if (c.n == n && std::memcmp(c.v, data, static_cast<size_t>(n) * 4) == 0) return true;
+    c.n = n;
+    std::memcpy(c.v, data, static_cast<size_t>(n) * 4);
+    return false;
+}
+
+void Renderer::bindTexture(int unit, GLuint tex) {
+    if (unit < 0 || unit >= 32) unit = 0;
+    if (texBindValid_ && boundTex_[unit] == tex) return;
+    if (!texBindValid_) {
+        std::memset(boundTex_, 0xFF, sizeof(boundTex_));
+        texBindValid_ = true;
+    }
+    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(unit));
+    glBindTexture(GL_TEXTURE_2D, tex);
+    boundTex_[unit] = tex;
+}
+
 void Renderer::useProgram(GLuint id) {
     if (id == curProgram_) return;
     glUseProgram(id);
@@ -538,6 +562,8 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
     }
     useProgram(prog->id);
     applyRenderState(pass.state);
+    prog->ucache.clear();
+    texBindValid_ = false;
     const auto& un = prog->meta.uniforms;
     for (const MaterialParam& p : pass.params) {
         if (p.uniformIndex >= un.size() || p.type != 0) continue;
@@ -644,6 +670,7 @@ uint64_t Renderer::sortKey(const MaterialPass& pass, float depth) {
 
 void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& vp) {
     double t0 = cpuMs();
+    texBindValid_ = false;
     std::vector<DrawItem> draws;
     uint32_t seq = 0;
     for (const SceneItem& it : items) {
@@ -866,8 +893,9 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                     for (int i = 0; i < cp.n; ++i) v[i] = p.values[static_cast<size_t>(i)];
                     float ov[4];
                     uint32_t mask = 0;
-                    if (cp.bound && inst.materialOverride(mat.nameHash, p.nameHash, 0, ov, &mask))
+                    if (cp.bound && inst.hasMaterialOverrides() && inst.materialOverride(mat.nameHash, p.nameHash, 0, ov, &mask))
                         for (int c = 0; c < 4; ++c) if (mask & (1u << c)) v[c] = ov[c];
+                    if (uniformUnchanged(*prog, cp.loc, v, cp.n)) continue;
                     switch (cp.n) {
                         case 1: glUniform1fv(cp.loc, 1, v); break;
                         case 2: glUniform2fv(cp.loc, 1, v); break;
@@ -878,9 +906,8 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                     }
                 } else {
                     if (cp.use) cp.use->lastUse = frame_;
-                    glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(cp.unit));
-                    glBindTexture(GL_TEXTURE_2D, cp.tex);
-                    glUniform1i(cp.loc, cp.unit);
+                    bindTexture(cp.unit, cp.tex);
+                    if (!uniformUnchanged(*prog, cp.loc, &cp.unit, 1)) glUniform1i(cp.loc, cp.unit);
                 }
             }
             // engine-supplied and global values
@@ -891,35 +918,49 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                     if (u.cls >= 3) {
                         auto gs = vp.globalSamplers.find(u.name);
                         if (gs != vp.globalSamplers.end()) {
-                            glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(u.unit));
-                            glBindTexture(GL_TEXTURE_2D, gs->second);
-                            glUniform1i(loc, u.unit);
+                            bindTexture(u.unit, gs->second);
+                            if (!uniformUnchanged(*prog, loc, &u.unit, 1)) glUniform1i(loc, u.unit);
                         }
                     }
                     continue;
                 }
+                auto mat4 = [&](const Mat4& m) {
+                    if (!uniformUnchanged(*prog, loc, m.m, 16)) uploadMat(loc, m);
+                };
+                auto vecf = [&](const float* v, int n, int count) {
+                    if (uniformUnchanged(*prog, loc, v, n * count)) return;
+                    if (n == 1) glUniform1fv(loc, count, v);
+                    else if (n == 2) glUniform2fv(loc, count, v);
+                    else glUniform4fv(loc, count, v);
+                };
+                auto int1 = [&](int v) {
+                    if (!uniformUnchanged(*prog, loc, &v, 1)) glUniform1i(loc, v);
+                };
                 switch (static_cast<Semantic>(u.semantic)) {
-                    case Semantic::WorldMatrix: uploadMat(loc, world); break;
-                    case Semantic::InvWorldMatrix: uploadMat(loc, world.inverse()); break;
-                    case Semantic::ViewMatrix: uploadMat(loc, vp.view); break;
-                    case Semantic::InvViewMatrix: uploadMat(loc, vp.view.inverse()); break;
-                    case Semantic::ProjMatrix: uploadMat(loc, vp.proj); break;
-                    case Semantic::WorldViewMatrix: uploadMat(loc, wv); break;
-                    case Semantic::WorldViewProjMatrix: uploadMat(loc, wvp); break;
-                    case Semantic::NormalMatrix: uploadMat(loc, normalMatrix(wv)); break;
+                    case Semantic::WorldMatrix: mat4(world); break;
+                    case Semantic::InvWorldMatrix: mat4(world.inverse()); break;
+                    case Semantic::ViewMatrix: mat4(vp.view); break;
+                    case Semantic::InvViewMatrix: mat4(vp.view.inverse()); break;
+                    case Semantic::ProjMatrix: mat4(vp.proj); break;
+                    case Semantic::WorldViewMatrix: mat4(wv); break;
+                    case Semantic::WorldViewProjMatrix: mat4(wvp); break;
+                    case Semantic::NormalMatrix: mat4(normalMatrix(wv)); break;
                     case Semantic::BlendPalette:
-                        if (!palette.empty()) glUniformMatrix4fv(loc, static_cast<GLsizei>(palette.size() / 16), GL_FALSE, palette.data());
+                        if (!palette.empty()) {
+                            if (loc >= 0 && static_cast<size_t>(loc) < prog->ucache.size()) prog->ucache[static_cast<size_t>(loc)].n = -1;
+                            glUniformMatrix4fv(loc, static_cast<GLsizei>(palette.size() / 16), GL_FALSE, palette.data());
+                        }
                         break;
-                    case Semantic::Time: glUniform1fv(loc, 1, &vp.time); break;
-                    case Semantic::AspectRatio: glUniform1fv(loc, 1, &vp.aspect); break;
-                    case Semantic::ScreenSize: glUniform2fv(loc, 1, vp.screenSize); break;
-                    case Semantic::ViewMid: glUniform2fv(loc, 1, vp.viewMid); break;
-                    case Semantic::ViewIndex: glUniform1i(loc, vp.viewIndex); break;
-                    case Semantic::LightCount: glUniform1i(loc, lightCount); break;
-                    case Semantic::LightPosition: glUniform4fv(loc, 4, lpos); break;
-                    case Semantic::LightDirection: glUniform4fv(loc, 4, ldir); break;
-                    case Semantic::LightRangeSpotAngle: glUniform4fv(loc, 4, lrs); break;
-                    case Semantic::LightColor: glUniform4fv(loc, 4, lcol); break;
+                    case Semantic::Time: vecf(&vp.time, 1, 1); break;
+                    case Semantic::AspectRatio: vecf(&vp.aspect, 1, 1); break;
+                    case Semantic::ScreenSize: vecf(vp.screenSize, 2, 1); break;
+                    case Semantic::ViewMid: vecf(vp.viewMid, 2, 1); break;
+                    case Semantic::ViewIndex: int1(vp.viewIndex); break;
+                    case Semantic::LightCount: int1(lightCount); break;
+                    case Semantic::LightPosition: vecf(lpos, 4, 4); break;
+                    case Semantic::LightDirection: vecf(ldir, 4, 4); break;
+                    case Semantic::LightRangeSpotAngle: vecf(lrs, 4, 4); break;
+                    case Semantic::LightColor: vecf(lcol, 4, 4); break;
                     default: warnOnce("unhandled semantic " + std::to_string(u.semantic) + " (" + u.name + ")");
                 }
             }
@@ -1020,6 +1061,8 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
 
     useProgram(prog->id);
     applyRenderState(pass.state);
+    prog->ucache.clear();
+    texBindValid_ = false;
     // material parameters; the diffuse texture also defines the flipbook geometry
     static const uint32_t kDiffuse = fnv1a("DiffuseMap");
     std::pair<int, int> texSize{1, 1};

@@ -619,7 +619,7 @@ const RenderTarget* Engine::eyeOutput(int eye) const {
 }
 
 void Engine::draw() {
-    if (!activeGraph_ || !activeGraph_->graph) return;
+    if (!activeGraph_ || !activeGraph_->graph || skipRender) return;
     double td0 = timingOn() ? nowMs() : 0;
     for (auto* g : graphs)
         if (g != activeGraph_) {
