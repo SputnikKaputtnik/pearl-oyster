@@ -1,0 +1,198 @@
+// Story engine: the native side of the original Lua story (moxie.v2 semantics, see
+// docs/native-api.md and docs/player.md). Owns the Lua host, the scene graph the scripts build,
+// story time and the render manager state; renders through oyster::Renderer / RenderGraph.
+//
+// Frame (LApplication loop):  update(dt)  -> Application.onUpdate (scheduler, FSMs, scene:update)
+//                             render()    -> Application.onRender -> RenderManager.draw
+#pragma once
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "assets/anim.h"
+#include "assets/model.h"
+#include "core/json.h"
+#include "core/math.h"
+#include "core/pkgfs.h"
+#include "scene/animation.h"
+#include "scene/model_instance.h"
+#include "story/lua_host.h"
+
+namespace oyster {
+class Renderer;
+class RenderGraph;
+struct RenderTarget;
+}  // namespace oyster
+
+namespace oyster::story {
+
+class Engine;
+struct AnimationObj;
+
+// Scene graph node (SGTransform). Local transform as SRT; world composed through the parent
+// chain (SGTransform::updateTransformIfDirty) - attachments go through a bone of an actor
+// (SGAttachmentProxy: actor world * bone model matrix).
+struct SGNode : NativeObject {
+    enum class Kind { Transform, Actor, Camera, Light, RenderGraphInstance, Atmospherics, Particles, Other };
+    Kind kind = Kind::Transform;
+    std::string name;
+    Vec3 position{0, 0, 0};
+    Quat rotation;
+    Vec3 scale{1, 1, 1};
+    SGNode* parent = nullptr;
+    int parentBone = -1;  // >= 0: attached to this node of the parent actor
+    std::vector<SGNode*> children;
+    uint32_t viewFlags = 0xFFFFFFFFu;
+    bool visible = true, active = true;
+    bool luaComponents = false;  // has an LComponent (Transform.__onUpdate etc. are called)
+    bool alive = true;
+    uint64_t order = 0;  // creation order (scene traversal order)
+
+    Mat4 localMatrix() const { return Mat4::trs(position, rotation, scale); }
+    Mat4 worldMatrix() const;
+    bool effectiveVisible() const;  // own visibility and active flag, inherited from parents
+};
+
+// SGModelInstance with its Animator: one playing clip at a time (Animator::play stops other
+// playing clips of the same layer; DefaultAnimMixer::update samples it, then advances its time).
+struct ActorNode : SGNode {
+    std::string uri;
+    std::unique_ptr<ModelInstance> inst;
+    std::vector<AnimationObj*> animations;
+    AnimationObj* bound = nullptr;  // clip currently bound to the ModelInstance
+    float boneRadius = 0;
+    bool drawable = true;           // false for render graph instances
+};
+
+struct CameraNode : SGNode {
+    bool ortho = false;
+    float fovDeg = 60.0f, znear = 0.01f, zfar = 10000.0f;
+    float left = -1, top = 1, right = 1, bottom = -1;
+};
+
+struct LightNode : SGNode {
+    int type = 0;  // LT_DIRECTIONAL 0, LT_POINT 1, LT_SPOT 2, LT_AMBIENT 3
+    float color[3] = {1, 1, 1};
+    float wrap = 0;
+    float range[2] = {0, 100000};
+    float spot[2] = {0, 0};
+};
+
+// Animation object (Actor.addAnimation / RenderGraphInstance.addAnimation).
+struct AnimationObj : NativeObject {
+    ActorNode* owner = nullptr;
+    std::string name;
+    AnimationPlayback pb;
+    bool playing = false;  // Animation +0xc4
+    float weight = 1.0f;
+};
+
+struct SceneObj : NativeObject {
+    std::vector<SGNode*> nodes;  // creation order
+};
+
+struct RenderGraphObj : NativeObject {
+    std::string name;
+    Json def;
+    std::unique_ptr<RenderGraph> graph;
+};
+
+// Plain handle types the scripts only pass around (resource groups, FSMs, stats, views, ...).
+struct GenericObj : NativeObject {
+    std::string name;
+    std::map<std::string, double> numbers;
+};
+
+struct TimeState {
+    double fixedStepMs = 0;      // Time.setFixedTimeStep / -fixedtimestep (0 = real time)
+    int64_t elapsedUs = 0;       // story clock
+    int64_t dtUs = 0;            // current frame
+    bool paused = false;
+    float scale = 1.0f;
+    float errorCorrectRate = 0;  // Time.setErrorCorrectParams (+0x60 / +0x64)
+    bool errorCorrect = false;
+};
+
+struct EngineOptions {
+    std::string package = "pearl_vrcam";
+    SamplingPolicy policy = SamplingPolicy::original();
+    int width = 1280, height = 720;
+    int msaa = 2;
+};
+
+class Engine {
+public:
+    Engine(const PackageFS& fs, const EngineOptions& opt);
+    ~Engine();
+
+    bool boot();                 // loads story/scripts/app, Application.onInitialize, onReshape
+    bool frame(double dtSeconds);  // one update + render (dt ignored with a fixed time step)
+    const RenderTarget* output() const;  // last rendered frame (active graph output)
+
+    LuaHost& lua() { return *lua_; }
+    const PackageFS& fs() const { return fs_; }
+    const EngineOptions& options() const { return opt_; }
+    TimeState& time() { return time_; }
+    Renderer& renderer() { return *renderer_; }
+
+    // --- object model used by the bindings ---------------------------------------------
+    template <typename T> T* create(const char* type) {
+        auto o = lua_->create<T>(type);
+        return o.get();
+    }
+    SGNode* addNode(SceneObj* scene, SGNode* node, const std::string& name);
+    void destroyNode(SGNode* node);
+    ActorNode* createActor(SceneObj* scene, const std::string& name, const std::string& modelUri, const char* type = "Actor");
+    AnimationObj* addAnimation(ActorNode* actor, const std::string& name, const std::string& uri, int first, int last,
+                               bool loop, bool relative);
+    void playAnimation(AnimationObj* a, bool restart);
+    void stopAnimation(AnimationObj* a);
+    void destroyAnimation(AnimationObj* a);
+    RenderGraphObj* createRenderGraph(const Json& def);
+    RenderGraphObj* findRenderGraph(const std::string& name);
+    void setActiveRenderGraph(RenderGraphObj* g) { activeGraph_ = g; }
+    void resize(int w, int h);
+    void sceneUpdate(lua_State* L, SceneObj* scene);  // Scene.update (SceneGraph::update), L = caller
+    void draw();                        // RenderManager.draw
+    std::shared_ptr<ModelResource> model(const std::string& uri);
+    std::shared_ptr<AnimResource> anim(const std::string& uri);
+    std::unique_ptr<ModelInstance> instantiate(const std::string& uri);
+
+    std::vector<SceneObj*> scenes;
+    std::vector<RenderGraphObj*> graphs;
+    std::vector<LightNode*> lights() const;
+    CameraNode* mainCamera = nullptr;  // first camera created (story.def.camera)
+    std::map<std::string, std::string> platformStrings;
+    std::vector<std::string> fsmNames;
+    uint64_t frameIndex = 0;
+    bool exitRequested = false;  // System.exit
+
+private:
+    void bindAll();
+    void callNodeHook(lua_State* L, SGNode* n, const char* hook);
+    void updateActor(ActorNode* a, float dt);
+
+    const PackageFS& fs_;
+    EngineOptions opt_;
+    std::unique_ptr<LuaHost> lua_;
+    std::unique_ptr<Renderer> renderer_;
+    TimeState time_;
+    RenderGraphObj* activeGraph_ = nullptr;
+    std::map<std::string, std::shared_ptr<ModelResource>> models_;
+    std::map<std::string, std::shared_ptr<AnimResource>> anims_;
+    std::vector<SGNode*> pendingDelete_;
+    uint64_t nextOrder_ = 0;
+    int width_ = 0, height_ = 0;
+};
+
+// Bindings (bind_*.cpp)
+void bindCore(Engine& e);
+void bindScene(Engine& e);
+void bindRender(Engine& e);
+Engine& engineOf(lua_State* L);
+
+// Lua table at idx -> Json (numbers, strings, booleans, nested tables; functions dropped).
+Json luaToJson(lua_State* L, int idx, int depth = 0);
+
+}  // namespace oyster::story

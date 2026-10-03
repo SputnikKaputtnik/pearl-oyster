@@ -1,6 +1,7 @@
 #include "scene/model_instance.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace oyster {
@@ -45,6 +46,8 @@ ModelInstance::ModelInstance(std::shared_ptr<const ModelResource> geometry, std:
     local_ = geom_->localXforms;
     world_.resize(n);
     nodeVisible_.assign(n, 1);
+    ownVisible_.assign(n, 1);
+    effVisible_.assign(n, 1);
     meshes_.resize(geom_->meshes.size());
 }
 
@@ -66,9 +69,9 @@ void ModelInstance::bindAnimation() {
         caches_[t].resize(a.tracks[t].channels.size());
         customCaches_[t].resize(a.tracks[t].custom.size());
     }
+    // The pose (local matrices, visibility) persists across clips like the engine's pose buffer;
+    // vertex animation output belongs to the clip's VertexAnimator binding.
     vanm_.clear();
-    local_ = geom_->localXforms;
-    nodeVisible_.assign(local_.size(), 1);
     for (auto& m : meshes_) m = MeshState();
     if (!a.vertexAnim) return;
     for (const VanmMesh& vm : a.vertexAnim->meshes) {
@@ -101,7 +104,9 @@ bool ModelInstance::materialOverride(uint32_t mh, uint32_t ph, uint32_t pass, fl
 void ModelInstance::evaluate(const SamplingPolicy& policy) {
     if (anim_) {
         const AnimResource& a = *anim_->res;
-        params_.clear();
+        const bool hasVanm = a.vertexAnim && !a.vertexAnim->meshes.empty();
+        // animated values live in the instance's material copies (createMaterialInstance) and
+        // keep their last value when a later clip has no channel for them: no clear here
         for (size_t t = 0; t < a.tracks.size(); ++t) {
             const AnimTrack& tr = a.tracks[t];
             int node = trackNode_[t];
@@ -110,19 +115,26 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
                 Quat rt = sampleQuat(tr, tr.channels[1], *anim_, caches_[t][1], policy);
                 Vec3 sc = sampleVec3(tr, tr.channels[2], *anim_, caches_[t][2], policy);
                 local_[node] = Mat4::trs(tl, rt, sc);
-                if (tr.channels.size() > 3 && !tr.channels[3].keys.empty())
-                    nodeVisible_[node] = sampleBool(tr, tr.channels[3], *anim_, caches_[t][3]) != 0;
+                // DefaultAnimMixer::update: transform-track visibility only for clips without
+                // vertex animation; an empty visibility channel means visible.
+                if (!hasVanm) {
+                    if (tr.channels.size() > 3 && !tr.channels[3].keys.empty())
+                        nodeVisible_[node] = sampleBool(tr, tr.channels[3], *anim_, caches_[t][3]) != 0;
+                    else
+                        nodeVisible_[node] = 1;
+                }
             }
             for (size_t c = 0; c < tr.custom.size(); ++c) {
                 const AnimChannel& ch = tr.custom[c];
                 if (ch.keys.empty() || ch.customVals.size() < 3) continue;
                 float v = sampleFloat(tr, ch, *anim_, customCaches_[t][c], policy);
-                // material channels: [materialHash, paramHash, pass, component];
+                // material channels (customA == 0): [materialHash, paramHash, type, component],
+                // bound per material (SGAnimator::bindCustomAnimationAttributes) - not per pass;
                 // render-graph channels (customA == 1): [paramHash, type, component]
                 bool graph = ch.customA == 1;
-                if (graph && ch.customVals.size() < 3) continue;
+                if (!graph && ch.customVals.size() < 4) continue;
                 ParamValue& pv = graph ? params_[{0u, ch.customVals[0], 0u}]
-                                       : params_[{ch.customVals[0], ch.customVals[1], ch.customVals[2]}];
+                                       : params_[{ch.customVals[0], ch.customVals[1], 0u}];
                 uint32_t comp = (graph ? ch.customVals[2] : ch.customVals[3]) & 3;
                 pv.v[comp] = v;
                 pv.mask |= 1u << comp;
@@ -133,6 +145,8 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
     for (size_t i = 0; i < local_.size(); ++i) {
         int p = i < parents.size() ? parents[i] : -1;
         world_[i] = (p >= 0 ? world_[static_cast<size_t>(p)] : root) * local_[i];
+        bool v = ownVisible_[i] && nodeVisible_[i] && (p < 0 || effVisible_[static_cast<size_t>(p)]);
+        effVisible_[i] = v ? 1 : 0;
     }
     evaluateVertexAnim(policy);
 }

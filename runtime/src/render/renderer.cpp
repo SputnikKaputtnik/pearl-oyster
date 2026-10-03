@@ -294,6 +294,10 @@ void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarg
         uint32_t mask = 0;
         if (anim && anim->materialOverride(0, p.nameHash, 0, ov, &mask))
             for (int c = 0; c < 4; ++c) if (mask & (1u << c)) v[c] = ov[c];
+        static const bool debugParams = std::getenv("OYSTER_DEBUG_PARAMS") != nullptr;
+        if (debugParams)
+            std::fprintf(stderr, "image %s param %08x = %g %g %g %g (anim mask %x)\n", mat.name.c_str(), p.nameHash, v[0],
+                         v[1], v[2], v[3], mask);
         switch (n) {
             case 1: glUniform1fv(loc, 1, v); break;
             case 2: glUniform2fv(loc, 1, v); break;
@@ -392,6 +396,14 @@ void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& 
             const Mesh& mesh = model.meshes[mi];
             if (mesh.vertices.count == 0 || mesh.indices.empty()) continue;
             size_t node = mesh.nodes.empty() ? 0 : mesh.nodes[0];
+            static const bool debugDraws = std::getenv("OYSTER_DEBUG_DRAWS") != nullptr;
+            if (debugDraws) {
+                Mat4 w = node < model.localXforms.size() ? inst.nodeWorld(node) : inst.root;
+                std::fprintf(stderr, "view %u mesh %zu node %zu (%s) nodeVis %d meshVis %d sub %zu pos %.1f %.1f %.1f\n",
+                             vp.viewFlag, mi, node, node < model.nodeNames.size() ? model.nodeNames[node].c_str() : "?",
+                             node < model.localXforms.size() ? static_cast<int>(inst.nodeVisible(node)) : -1,
+                             static_cast<int>(inst.meshState(mi).visible), mesh.subMeshes.size(), w.m[3], w.m[7], w.m[11]);
+            }
             if (node < model.localXforms.size() && !inst.nodeVisible(node)) continue;
             const MeshState& ms = inst.meshState(mi);
             if (!ms.visible) continue;
@@ -508,7 +520,14 @@ void Renderer::executeDraw(const DrawItem& d, const ViewParams& vp, const LightB
                     for (size_t i = 0; i < n; ++i) v[i] = p.values[i];
                     float ov[4];
                     uint32_t mask = 0;
-                    if (inst.materialOverride(mat.nameHash, p.nameHash, static_cast<uint32_t>(passIndex), ov, &mask))
+                    // Material::getParameter binds the first pass that has the parameter
+                    size_t boundPass = 0;
+                    for (size_t q = 0; q < mat.passes.size(); ++q) {
+                        bool has = false;
+                        for (const MaterialParam& pp : mat.passes[q].params) has = has || pp.nameHash == p.nameHash;
+                        if (has) { boundPass = q; break; }
+                    }
+                    if (boundPass == passIndex && inst.materialOverride(mat.nameHash, p.nameHash, 0, ov, &mask))
                         for (int c = 0; c < 4; ++c) if (mask & (1u << c)) v[c] = ov[c];
                     switch (n) {
                         case 1: glUniform1fv(loc, 1, v); break;

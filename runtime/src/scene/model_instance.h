@@ -34,6 +34,9 @@ public:
 
     // Play exactly one clip (the story plays one clip per actor and state).
     void setAnimation(const AnimationPlayback& playback);
+    // Same clip, new time state (story Animation objects own the playback, see story/scene.h).
+    void setPlaybackState(const AnimationPlayback& playback) { if (anim_) *anim_ = playback; }
+    void clearAnimation() { anim_.reset(); }  // pose, visibility and parameters keep their values
     AnimationPlayback* animation() { return anim_ ? &*anim_ : nullptr; }
     void advance(float dt) { if (anim_) anim_->advance(dt); }
 
@@ -42,10 +45,16 @@ public:
 
     const Mat4& nodeWorld(size_t i) const { return world_[i]; }
     const Mat4& nodeLocal(size_t i) const { return local_[i]; }
-    bool nodeVisible(size_t i) const { return nodeVisible_[i] != 0; }
+    // Effective visibility (updateModelMatrices): own flag (Actor.setBoneVisibility) && animated
+    // flag && effective visibility of the parent.
+    bool nodeVisible(size_t i) const { return effVisible_[i] != 0; }
+    void setNodeVisibility(size_t i, bool v) { ownVisible_[i] = v ? 1 : 0; }
+    bool nodeOwnVisible(size_t i) const { return ownVisible_[i] != 0; }
+    size_t nodeCount() const { return local_.size(); }
     const MeshState& meshState(size_t i) const { return meshes_[i]; }
 
-    // Animated material parameter override for (material, param, pass); mask = components set.
+    // Animated material parameter override for (material, param); pass is always 0 (the engine
+    // binds channels per material, all passes see the value); mask = components set.
     // Render-graph parameters (customA == 1) are stored under (0, param, 0).
     bool materialOverride(uint32_t materialHash, uint32_t paramHash, uint32_t pass, float out[4], uint32_t* mask) const;
 
@@ -56,7 +65,8 @@ private:
     std::shared_ptr<const ModelResource> geom_;
     std::vector<Material> materials_;
     std::vector<Mat4> local_, world_;
-    std::vector<uint8_t> nodeVisible_;
+    std::vector<uint8_t> nodeVisible_;  // animated (pose) visibility
+    std::vector<uint8_t> ownVisible_, effVisible_;
     std::vector<MeshState> meshes_;
 
     std::unique_ptr<AnimationPlayback> anim_;

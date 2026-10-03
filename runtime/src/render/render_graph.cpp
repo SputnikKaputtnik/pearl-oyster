@@ -8,27 +8,37 @@ namespace oyster {
 using namespace gl;
 
 namespace {
-const std::string& constName(const Json& j) { return j["__const"].str(); }
+// Node type: RN_SCENE (= 0, common/scripts/graphics.lua) as a number (definition read from Lua)
+// or as {"__const": "RN_SCENE"} (JSON export of tools/lua_data_dump.py).
+bool isSceneNode(const Json& t) { return t.isNumber() ? t.num() == 0 : t["__const"].str() == "RN_SCENE"; }
+// Colour component i: Lua Color object {r,g,b,a} or exported constructor call {"args": [...]}.
+float colorComponent(const Json& c, int i, float def) {
+    if (c["args"].isArray()) return static_cast<float>(c["args"][static_cast<size_t>(i)].num(def));
+    static const char* keys[4] = {"r", "g", "b", "a"};
+    return static_cast<float>(c[keys[i]].num(def));
+}
 }  // namespace
 
 RenderGraph::RenderGraph(const Json& def, const Json& renderviews, const PackageFS& fs, const std::string& branch) {
     name_ = def["name"].str();
-    const Json& br = def["rendergraph"]["branches"][branch];
+    // Pearl's graphs carry branches; the story's default graph is a plain node list.
+    const Json& rg = def["rendergraph"];
+    const Json& br = rg.isArray() ? rg : rg["branches"][branch];
     if (!br.isArray()) throw std::runtime_error("render graph " + name_ + " has no branch " + branch);
     for (const Json& n : br.arr()) {
         Node node;
         node.name = n["name"].str();
-        node.scene = constName(n["type"]) == "RN_SCENE";
+        node.scene = isSceneNode(n["type"]);
         if (node.scene) {
             node.passId = static_cast<int>(n["passId"].num());
+            node.camera = n["camera"].str();
             const Json& ib = n["inputBindings"][0];
             const std::string& rv = ib["arg0"].str();
             const Json& v = renderviews[rv];
             node.view.name = rv;
             node.view.scale = static_cast<float>(v["scale"].num(1));
-            node.view.viewFlag = static_cast<uint32_t>(v["viewFlag"].num(2));
-            const Json& cc = v["clearcolor"]["args"];
-            for (int i = 0; i < 4; ++i) node.view.clear[i] = static_cast<float>(cc[static_cast<size_t>(i)].num(i == 3 ? 1 : 0));
+            node.view.viewFlag = static_cast<uint32_t>(static_cast<int64_t>(v["viewFlag"].num(2)));
+            for (int i = 0; i < 4; ++i) node.view.clear[i] = colorComponent(v["clearcolor"], i, i == 3 ? 1.0f : 0.0f);
             node.globalSampler = n["outputBinding"]["globalSampler"].str();
         } else {
             const Json& m = n["material"];
@@ -48,8 +58,11 @@ RenderGraph::RenderGraph(const Json& def, const Json& renderviews, const Package
     }
 }
 
-RenderGraph::~RenderGraph() {
+RenderGraph::~RenderGraph() { release(); }
+
+void RenderGraph::release() {
     for (auto& n : nodes_) n.target.destroy();
+    w_ = h_ = msaa_ = 0;
 }
 
 void RenderGraph::resize(int w, int h, int msaa) {

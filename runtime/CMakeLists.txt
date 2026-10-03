@@ -48,4 +48,18 @@ if(SDL2_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/renderer.cpp)
   target_link_libraries(oyster_render PUBLIC oyster_core)
   add_executable(oyster_viewer apps/viewer/main.cpp)
   target_link_libraries(oyster_viewer PRIVATE oyster_render SDL2::SDL2main SDL2::SDL2)
+
+  # Story engine: the original Lua scripts drive the scene (native API layer, docs/native-api.md)
+  add_library(oyster_story STATIC
+    src/story/lua_host.cpp
+    src/story/native_api_names.cpp
+    src/story/lua_json.cpp
+    src/story/engine.cpp
+    src/story/bind_core.cpp
+    src/story/bind_scene.cpp
+    src/story/bind_render.cpp
+  )
+  target_link_libraries(oyster_story PUBLIC oyster_render luajit)
+  add_executable(oyster_player apps/player/main.cpp)
+  target_link_libraries(oyster_player PRIVATE oyster_story SDL2::SDL2main SDL2::SDL2)
 endif()

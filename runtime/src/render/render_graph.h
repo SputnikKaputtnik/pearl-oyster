@@ -32,12 +32,14 @@ public:
     const RenderTarget& output() const;
     const RenderTarget* nodeTarget(const std::string& name) const;
     const std::string& name() const { return name_; }
+    void release();  // frees the render targets (inactive graph); resize() reallocates
 
 private:
     struct Node {
         std::string name;
         bool scene = false;
         int passId = 0;
+        std::string camera;  // scene node camera ("" = the story's main camera)
         RenderViewDef view;
         std::string globalSampler;
         Material material;
