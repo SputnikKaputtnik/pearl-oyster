@@ -141,7 +141,9 @@ struct App {
     float resolutionScale = kDefaultResolutionScale;
     bool interpolate = false;  // remaster: interpolate the original's stepped animation keys
     int msaa = 2;
-    float eyeRaise = 0.0f;  // metres, display only (HmdState::eyeRaise); thumbstick up/down
+    // metres, display only (HmdState::eyeRaise); thumbstick up/down. Default 0.30: chosen by the
+    // project owner in the headset (eye level with Dad in the car); 0 = the original framing.
+    float eyeRaise = 0.30f;
     // controller: A (right) / X (left) toggles the animation interpolation, the thumbsticks
     // (up/down) raise or lower the eye height in 5 cm steps
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -277,7 +279,7 @@ void loadConfig(App& a) {
                          "msaa = 2\n"
                          "# not in the original: eye cameras raised by this many metres (display only);\n"
                          "# the thumbsticks (up/down) change it in 5 cm steps and save it here\n"
-                         "eye_height_offset = 0.00\n",
+                         "eye_height_offset = 0.30\n",
                          kDefaultResolutionScale);
             std::fclose(w);
         }

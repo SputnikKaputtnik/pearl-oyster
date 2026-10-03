@@ -77,7 +77,7 @@ height); the tracking origin is the floor (LOCAL_FLOOR).
 resolution_scale = 1.30   # eye image = recommended size (1680x1760 on Quest 3) x this (default 1.3 = 2184x2288)
 animation = original      # or: interpolated (remaster: the authored stepped keys interpolated)
 msaa = 2                  # 1, 2 (the original's -msaa 2) or 4
-eye_height_offset = 0.00  # not in the original: eye cameras raised by this many metres
+eye_height_offset = 0.30  # not in the original: eye cameras raised by this many metres (0 = original)
 ```
 
 While the story plays, controller button **A** (right) or **X** (left) switches the animation
