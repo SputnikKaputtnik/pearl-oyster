@@ -72,6 +72,14 @@ public:
                    const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
+    // Texture memory: every texture remembers the frame it was last bound in. With a budget
+    // (bytes, 0 = unlimited) beginFrame() frees the least recently used textures that were not
+    // used for `minIdleFrames` until the total fits (they are reloaded on demand).
+    void beginFrame();
+    void setTextureBudget(size_t bytes, uint32_t minIdleFrames = 90) { texBudget_ = bytes; texMinIdle_ = minIdleFrames; }
+    size_t textureBytes() const { return texBytes_; }
+    size_t textureBytesUsedSince(uint64_t frame) const;
+    uint64_t frameCounter() const { return frame_; }
     void releaseInstance(uint64_t instanceId);  // frees the GPU buffers of a destroyed instance
     size_t drawCalls() const { return drawCalls_; }
     void resetStats() { drawCalls_ = 0; }
@@ -116,6 +124,14 @@ private:
     const PackageFS& fs_;
     std::unordered_map<std::string, GLuint> textures_;
     std::unordered_map<std::string, std::pair<int, int>> textureSizes_;
+    struct TexUse {
+        size_t bytes = 0;
+        uint64_t lastUse = 0;
+    };
+    std::unordered_map<std::string, TexUse> texUse_;
+    size_t texBytes_ = 0, texBudget_ = 0;
+    uint32_t texMinIdle_ = 90;
+    uint64_t frame_ = 0;
     GLuint particleVao_ = 0, particleVbo_ = 0, particleIbo_ = 0;
     std::vector<float> particleVerts_;
     std::unordered_map<std::string, std::unique_ptr<Program>> programs_;

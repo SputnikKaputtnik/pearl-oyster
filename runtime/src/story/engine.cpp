@@ -606,7 +606,15 @@ void Engine::draw() {
                          l->color[2], l->wrap, l->viewFlags, dir.x, dir.y, dir.z, l->parentBone);
         }
     }
+    renderer_->beginFrame();
     renderer_->resetStats();
+    static const bool debugTexMem = std::getenv("OYSTER_DEBUG_TEXMEM") != nullptr;
+    if (debugTexMem && frameIndex % 150 == 0) {
+        uint64_t fc = renderer_->frameCounter();
+        std::fprintf(stderr, "frame %llu textures %.1f MB, used in the last 30 frames %.1f MB\n",
+                     static_cast<unsigned long long>(frameIndex), renderer_->textureBytes() / 1048576.0,
+                     renderer_->textureBytesUsedSince(fc > 30 ? fc - 30 : 0) / 1048576.0);
+    }
     if (!hmd_.active) {
         RenderGraph& graph = *activeGraph_->graph;
         graph.resize(width_, height_, opt_.msaa);

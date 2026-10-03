@@ -18,4 +18,9 @@ struct TextureData {
 
 TextureData loadDDS(const std::vector<uint8_t>& data);
 
+// Lossless software decode of DXT5/BC3 to RGBA8 for GPUs without S3TC (Quest / Adreno).
+// `rounding` selects how the interpolated colours are rounded (see dds.cpp); the default is
+// the variant that reproduces the desktop GPU the original ran on.
+void decodeDXT5(const uint8_t* src, uint32_t width, uint32_t height, uint8_t* rgba, int rounding = 4);
+
 }  // namespace oyster

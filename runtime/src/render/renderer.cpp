@@ -152,9 +152,38 @@ void Renderer::warnOnce(const std::string& w) {
     std::fprintf(stderr, "warning: %s\n", w.c_str());
 }
 
+void Renderer::beginFrame() {
+    ++frame_;
+    if (texBudget_ == 0 || texBytes_ <= texBudget_) return;
+    std::vector<std::pair<uint64_t, std::string>> idle;
+    for (const auto& kv : texUse_)
+        if (kv.second.lastUse + texMinIdle_ < frame_) idle.emplace_back(kv.second.lastUse, kv.first);
+    std::sort(idle.begin(), idle.end());
+    for (const auto& e : idle) {
+        if (texBytes_ <= texBudget_) break;
+        auto t = textures_.find(e.second);
+        if (t != textures_.end()) {
+            if (t->second != white_) glDeleteTextures(1, &t->second);
+            textures_.erase(t);
+        }
+        texBytes_ -= texUse_[e.second].bytes;
+        texUse_.erase(e.second);
+    }
+}
+
+size_t Renderer::textureBytesUsedSince(uint64_t frame) const {
+    size_t n = 0;
+    for (const auto& kv : texUse_)
+        if (kv.second.lastUse >= frame) n += kv.second.bytes;
+    return n;
+}
+
 GLuint Renderer::texture(const std::string& uri) {
     auto it = textures_.find(uri);
-    if (it != textures_.end()) return it->second;
+    if (it != textures_.end()) {
+        texUse_[uri].lastUse = frame_;
+        return it->second;
+    }
     GLuint t = 0;
     try {
         TextureData d = loadDDS(fs_.read(uri));
@@ -162,6 +191,22 @@ GLuint Renderer::texture(const std::string& uri) {
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        // DXT5 without S3TC support (Quest/Adreno), or forced for testing: lossless CPU decode
+        static const char* forceDecode = std::getenv("OYSTER_DECODE_DXT");
+        static const bool hasS3tc = [] {
+            const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+            return ext && (std::strstr(ext, "GL_EXT_texture_compression_s3tc") || std::strstr(ext, "GL_EXT_texture_compression_dxt1"));
+        }();
+        if (d.format == TexFormat::DXT5 && (!hasS3tc || forceDecode)) {
+            std::vector<uint8_t> rgba(static_cast<size_t>(d.width) * d.height * 4);
+            decodeDXT5(d.level0.data(), d.width, d.height, rgba.data(), (forceDecode && *forceDecode) ? std::atoi(forceDecode) : 4);
+            d.level0.swap(rgba);
+            d.format = TexFormat::RGBA8;
+        }
+        TexUse& use = texUse_[uri];
+        use.lastUse = frame_;
+        use.bytes = d.format == TexFormat::RGBA8 ? static_cast<size_t>(d.width) * d.height * 4 : d.level0.size();
+        texBytes_ += use.bytes;
         if (d.format == TexFormat::RGBA8) {
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(d.width), static_cast<GLsizei>(d.height), 0, GL_RGBA,
                          GL_UNSIGNED_BYTE, d.level0.data());
