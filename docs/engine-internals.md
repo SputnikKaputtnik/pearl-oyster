@@ -17,6 +17,20 @@ Source: Ghidra 12.1.3 project of `moxie.v2.shared.windows.dll` (Steam build 1340
   independent of the real clock — no waiting/pacing loop exists in the time code **[F]**.
 * `step()` (single-step from paused) injects `dt = 0x411a` µs = 16 666 µs (1/60 s) **[F]**.
 
+## Character animation playback (`VertexAnimator::update` @ 0x1800a7e10)
+
+* Frame position `f = elapsed × rate + start`, clamped to the last frame;
+  `f0 = floor(f)`, `f1 = f0 + 1` (wraps to 0 for looping clips), `t = f − f0` **[F]**.
+* Per animated mesh a flag (VMesh field `u32` = 3 or 1, bit 1) selects the mode **[F]**:
+  * **bit set (value 3, 3203 of 3473 meshes): stepped** — frame `f0` is copied, no
+    in-betweens. Characters therefore move strictly on the 30 fps animation frames regardless
+    of display rate — a deliberate stylistic property that a faithful port must keep.
+  * bit clear (value 1, 270 meshes): linear blend `(f1 − f0)·t + f0` of positions and of the
+    second channel (no renormalization).
+* Per-frame visibility bits (u16 per 16-frame block) hide meshes (e.g. clothing variants).
+* Decoding is incremental: inside a 16-frame block, frames are decoded forward from the block's
+  absolute first frame; jumping elsewhere re-decodes from the block start.
+
 ## Frame capture pipeline
 
 1. `RenderManager::captureStart(dir, …)` (0x18013a8b0) builds the filename pattern
@@ -59,3 +73,15 @@ Not explained statically: the time code has no wait loop, the capture is synchro
 loop's only `while` is the event drain. Next step proposed: sample the instruction pointers of
 the spinning threads during a reproduction (Win32 `SuspendThread`/`GetThreadContext` from a
 small Python tool) and map them to functions in this Ghidra project.
+
+## Subdivision surfaces = baked stencils (`SubdivSurfaceInstance` vtable +8 @ 0x1801b7fb0)
+
+For cages with attribute flags 3 (position + normal) the per-frame evaluation is
+`FUN_1801b6db0` + `FUN_1801b7160` **[F]**:
+* For each output point j (count = topology header [0]): `k = faceBytes[j]` (u8), then
+  `out_j = Σ_{i<k} w_i · cage[idx_i]` for position and the second channel, with `idx` from the
+  `u32[nIdx]` array and `w` from the `f32[nIdx]` array of the topology block. No recursive
+  refinement at runtime — the refinement was precomputed into linear stencils.
+* `FUN_1801b7160` then gathers the outputs into render-vertex order using the first index array
+  of the last block (`n0 × u32[n1]`). Other attribute sets use `FUN_1801b69d0` (not yet read).
+This makes the character pipeline: decode VANM cage frame → apply stencils → remap → render.
