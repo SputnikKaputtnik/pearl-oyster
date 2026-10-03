@@ -311,6 +311,9 @@ void startEngine(App& a) {
         opt.width = a.swapchains[0].width;
         opt.height = a.swapchains[0].height;
         opt.msaa = 2;  // the Steam build's -msaa 2
+        opt.precompileShaders = true;  // no shader compiles while the story plays
+        opt.shaderCacheDir = files + "/shadercache";
+        std::filesystem::create_directories(opt.shaderCacheDir);
         a.engine = std::make_unique<story::Engine>(*a.fs, opt);
         story::HmdState& h = a.engine->hmd();
         h.active = true;  // before boot: the camera rig asks DisplayDevice.getType on creation
