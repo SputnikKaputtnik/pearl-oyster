@@ -1,0 +1,3 @@
+AudServices::setHRTF
+AudServices::getHRTF
+AudioSystem::setListenerHRTF

@@ -30,6 +30,18 @@ Hard parts **[I]**:
 * DXT5 is not hardware-supported on Quest (Adreno): needs lossless-as-possible transcoding or
   GPU decode — a *technical* conversion that must be documented and reversible.
 
+## Format status (update 2026-10-03)
+
+All content formats needed to draw Pearl are now decoded and verified against every file:
+`.mxm` (742/742, incl. compressed geometry 9227/9227 meshes), `.mxa` (953/953, incl. VANM
+vertex animation: 656 582 frames decoded), `.mxb` (10/10), `.pfb` (7/7), material render
+states (8 distinct, mapped to GL), `.shd` (GLSL ES text). Engine semantics established:
+stepped 30 fps character animation (3203/3473 meshes), subdivision as baked linear stencils,
+integer header fps, unseeded CRT `rand()` for particles, time model incl. error correction.
+This removes the main uncertainty against route C (replacement player): every asset can be
+read by our own code, and the reference capture recipe (`-playblast`, `-fixedtimestep`,
+`-record/-replay`) provides ground truth for comparison.
+
 ## Candidate routes
 
 | | A. Reuse/shim an original Android Moxie runtime | B. Port parts of the original runtime | C. Minimal Moxie-compatible replacement player |
