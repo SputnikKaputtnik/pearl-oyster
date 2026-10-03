@@ -41,6 +41,7 @@ public:
     void evaluate(const SamplingPolicy& policy);
 
     const Mat4& nodeWorld(size_t i) const { return world_[i]; }
+    const Mat4& nodeLocal(size_t i) const { return local_[i]; }
     bool nodeVisible(size_t i) const { return nodeVisible_[i] != 0; }
     const MeshState& meshState(size_t i) const { return meshes_[i]; }
 
