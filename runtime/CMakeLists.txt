@@ -33,37 +33,42 @@ add_library(oyster_core STATIC
 target_include_directories(oyster_core PUBLIC src)
 
 include(cmake/luajit.cmake)
+include(cmake/vorbis.cmake)
 
-add_executable(oyster_lua apps/lua/main.cpp)
-target_link_libraries(oyster_lua PRIVATE luajit)
+add_library(oyster_render STATIC
+  src/render/gl.cpp
+  src/render/renderer.cpp
+  src/render/render_graph.cpp
+)
+target_link_libraries(oyster_render PUBLIC oyster_core)
 
-add_executable(oyster_check apps/check/main.cpp)
-target_link_libraries(oyster_check PRIVATE oyster_core)
+# Story engine: the original Lua scripts drive the scene (native API layer, docs/native-api.md)
+add_library(oyster_story STATIC
+  src/story/lua_host.cpp
+  src/story/native_api_names.cpp
+  src/story/lua_json.cpp
+  src/story/engine.cpp
+  src/story/bind_core.cpp
+  src/story/bind_scene.cpp
+  src/story/bind_render.cpp
+  src/story/bind_audio.cpp
+  src/audio/audio_engine.cpp
+)
+target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile)
 
-find_package(SDL2 CONFIG)
-if(SDL2_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/renderer.cpp)
-  add_library(oyster_render STATIC
-    src/render/gl.cpp
-    src/render/renderer.cpp
-    src/render/render_graph.cpp
-  )
-  target_link_libraries(oyster_render PUBLIC oyster_core)
-  add_executable(oyster_viewer apps/viewer/main.cpp)
-  target_link_libraries(oyster_viewer PRIVATE oyster_render SDL2::SDL2main SDL2::SDL2)
+# Desktop tools and players (the Quest app lives in apps/quest and adds this directory)
+if(NOT ANDROID)
+  add_executable(oyster_lua apps/lua/main.cpp)
+  target_link_libraries(oyster_lua PRIVATE luajit)
 
-  # Story engine: the original Lua scripts drive the scene (native API layer, docs/native-api.md)
-  add_library(oyster_story STATIC
-    src/story/lua_host.cpp
-    src/story/native_api_names.cpp
-    src/story/lua_json.cpp
-    src/story/engine.cpp
-    src/story/bind_core.cpp
-    src/story/bind_scene.cpp
-    src/story/bind_render.cpp
-    src/story/bind_audio.cpp
-    src/audio/audio_engine.cpp
-  )
-  target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile vorbis ogg)
-  add_executable(oyster_player apps/player/main.cpp)
-  target_link_libraries(oyster_player PRIVATE oyster_story SDL2::SDL2main SDL2::SDL2)
+  add_executable(oyster_check apps/check/main.cpp)
+  target_link_libraries(oyster_check PRIVATE oyster_core)
+
+  find_package(SDL2 CONFIG)
+  if(SDL2_FOUND)
+    add_executable(oyster_viewer apps/viewer/main.cpp)
+    target_link_libraries(oyster_viewer PRIVATE oyster_render SDL2::SDL2main SDL2::SDL2)
+    add_executable(oyster_player apps/player/main.cpp)
+    target_link_libraries(oyster_player PRIVATE oyster_story SDL2::SDL2main SDL2::SDL2)
+  endif()
 endif()

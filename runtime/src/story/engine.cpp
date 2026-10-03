@@ -546,7 +546,12 @@ void Engine::draw() {
             }
             if (n->kind != SGNode::Kind::Actor || !n->effectiveVisible()) continue;
             auto* a = static_cast<ActorNode*>(n);
-            if (a->drawable && a->inst) items.push_back({a->inst.get(), a->viewFlags});
+            if (a->drawable && a->inst) {
+                SceneItem it;
+                it.inst = a->inst.get();
+                it.viewFlags = a->viewFlags;
+                items.push_back(it);
+            }
         }
 
     ViewParams vp;
