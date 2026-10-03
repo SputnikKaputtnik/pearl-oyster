@@ -362,11 +362,9 @@ void pixelStorei(GLenum pname, GLint v) {
     Call<&real::glPixelStorei, PFN_glPixelStorei>::async(pname, v);
 }
 
-// glGen*: names from a pool, refilled 1024 at a time with one synchronous call (a shot change
-// creates hundreds of buffers)
-// Below kLow names (a shot change creates over a thousand buffers) a refill is queued into the
-// stream (the render thread generates them when it gets there); only an empty pool makes a call
-// wait.
+// glGen*: names from a pool. Below kLow names (a shot change creates over a thousand buffers) a
+// refill is queued into the stream (the render thread generates them when it gets there); only
+// an empty pool makes a call wait (synchronous refill of 1024).
 template <auto* Var, int Pool>
 void gen(GLsizei n, GLuint* out) {
     if (tRender) return (*Var)(n, out);
