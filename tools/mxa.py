@@ -54,8 +54,43 @@ def parse(data, stop_before_vertex_anim=True):
     a["vertex_anim_at"] = r.p
     if a["has_vertex_anim"] and version == 2:
         a["gsa_id"] = r.u32()
+    elif a["has_vertex_anim"]:
+        a["vertex_anim"] = read_vertex_anim(r)
     a["end"] = r.p
     return a
+
+
+def read_bitblock(r):
+    nbits = r.u32()
+    return nbits, r.take((nbits + 7) >> 3)
+
+
+def read_vertex_anim(r):
+    """FUN_1800a9b20 + per mesh FUN_1800a9c50(.., withBounds=1) + chunks FUN_1800aa1d0.
+    Two reads had their element count dropped by Ghidra (4-byte magic, 8-byte mesh field)."""
+    magic = r.take(4)
+    if magic != b"VANM":
+        raise ValueError(f"vertex anim magic {magic!r}")
+    va = {"version": r.u32(), "u32": r.u32(), "fps": r.f32()}
+    meshes = []
+    for _ in range(r.u32()):
+        m = {"name": r.string(), "u32_70": r.u32()}
+        nchunks = r.u32()
+        m["frames"] = r.u32()
+        m["field8"] = r.take(8)
+        nblk = r.u32()
+        m["visibility"] = struct.unpack(f"<{nblk}H", r.take(2 * nblk))  # 1 bit per frame, 16 per block
+        m["bounds"] = [struct.unpack("<6f", r.take(24)) for _ in range(nblk)]  # min xyz, max xyz
+        chunks = []
+        for _ in range(nchunks):
+            c = {"a": r.u32(), "frames": r.u32(), "c": r.u32()}
+            c["blocks"] = [read_bitblock(r) for _ in range((c["frames"] + 15) >> 4)]
+            c["header"] = read_bitblock(r)
+            chunks.append(c)
+        m["chunks"] = chunks
+        meshes.append(m)
+    va["meshes"] = meshes
+    return va
 
 
 def check(root):
