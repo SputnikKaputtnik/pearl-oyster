@@ -56,6 +56,30 @@ height); the tracking origin is the floor (LOCAL_FLOOR).
   IPD is the distance of the two eye positions.
 * The eye images are copied 1:1 into sRGB swapchains with sRGB write encoding disabled, so the
   compositor receives the same display-referred values the original submitted to SteamVR.
-* DXT5 textures arrive pre-converted to RGBA8 (oyster_prepare); the decoder reproduces the desktop GPU
-  arithmetic; decoded textures are kept within a 1 GB budget (least recently used are freed).
+* DXT5 textures are uploaded as they are (the Adreno 740 decodes S3TC natively); without the
+  extension the software decoder reproduces the desktop GPU arithmetic. Textures are kept within
+  a 1 GB budget (least recently used are freed).
 * Story time advances only while the app has focus; audio (AAudio, 48 kHz) pauses with it.
+* Shaders are built before the story starts ("COMPILING SHADERS" panel), from a program binary
+  cache after the first start.
+* Two threads share the frame: the engine thread runs `xrWaitFrame`, the head pose, the story,
+  animation and scene preparation and records the GL calls; a render thread owns the GL context,
+  replays them (the driver work) and does `xrBeginFrame`, the swapchain copies and `xrEndFrame`
+  (`src/render/gl_thread.h`). Frame N is drawn while frame N+1 is computed. The command order is
+  the call order, so the images are identical to single-threaded rendering (verified on the
+  desktop player with `--threaded`). The flag file `/sdcard/Oyster/singlethread` disables it.
+
+## Self test (no headset needed)
+
+`oyster_selftest` (built with the Android CMake build, see `apps/android_selftest`) runs the story
+from `adb shell` offscreen at the eye size and field of view of the Quest 3 with a still, seated
+head and prints a per-shot table (engine thread, render thread, GPU wait, frame period):
+
+```bash
+adb push oyster_selftest /data/local/tmp && adb shell chmod 755 /data/local/tmp/oyster_selftest
+adb shell "cd /data/local/tmp && ./oyster_selftest /sdcard/Oyster/pearl 30000 72"
+```
+
+`OYSTER_SKIP_TO=<state>` fast-forwards (without rendering) to a story state,
+`OYSTER_THREADED=0` measures single-threaded, `OYSTER_DEBUG_TIMING=1` adds the engine's CPU
+breakdown and `OYSTER_DEBUG_GLSYNC=1` counts the GL calls that had to wait for the render thread.

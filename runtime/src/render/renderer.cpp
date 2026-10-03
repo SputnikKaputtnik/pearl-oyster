@@ -1109,7 +1109,11 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
     for (size_t ch = 0; ch < 4; ++ch)
         for (size_t key = 0; key < 4; ++key) colors[ch * 4 + key] = d.f(0x34 + 16 * key + 4 * ch);
     float curvature = d.f(0x20), emissive = d.f(0x24);
-    auto loc = [&](const char* n) { return glGetUniformLocation(prog->id, n); };
+    auto loc = [&](const char* n) {
+        auto f = prog->namedUniform.find(n);
+        if (f == prog->namedUniform.end()) f = prog->namedUniform.emplace(n, glGetUniformLocation(prog->id, n)).first;
+        return f->second;
+    };
     glUniform1fv(loc("u_numFrames"), 1, &numF);
     glUniform2fv(loc("u_textureSize"), 1, texSz);
     glUniform2fv(loc("u_frameSize"), 1, frameSz);
@@ -1155,7 +1159,9 @@ void Renderer::drawParticles(const SceneItem& it, const ViewParams& vp) {
                     {"a_col", 4, GL_UNSIGNED_BYTE, GL_TRUE, 0x20, -1},    {"a_frame", 4, GL_UNSIGNED_BYTE, GL_FALSE, 0x24, -1},
                     {"a_colorLife", 1, GL_FLOAT, GL_FALSE, 0x28, -1},     {"a_rotLife", 1, GL_FLOAT, GL_FALSE, 0x2c, -1}};
     for (Attr& a : attrs) {
-        a.loc = glGetAttribLocation(prog->id, a.name);
+        auto f = prog->namedAttrib.find(a.name);
+        if (f == prog->namedAttrib.end()) f = prog->namedAttrib.emplace(a.name, glGetAttribLocation(prog->id, a.name)).first;
+        a.loc = f->second;
         if (a.loc >= 0) glEnableVertexAttribArray(static_cast<GLuint>(a.loc));
     }
     for (size_t first = 0; first < ps.size(); first += kCapacity) {

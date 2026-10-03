@@ -1,0 +1,549 @@
+#include "render/gl_thread.h"
+
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <map>
+#include <string>
+#include <mutex>
+#include <new>
+#include <thread>
+#include <tuple>
+#include <type_traits>
+#include <vector>
+
+#include "render/gl.h"
+
+namespace oyster::gl::threaded {
+namespace {
+
+// the driver's entry points while the render thread is active
+namespace real {
+#define OYSTER_GL_REAL(ret, name, args) PFN_##name name = nullptr;
+OYSTER_GL_FUNCS(OYSTER_GL_REAL)
+#undef OYSTER_GL_REAL
+PFN_glInvalidateFramebuffer glInvalidateFramebuffer = nullptr;
+PFN_glFramebufferTexture2DMultisampleEXT glFramebufferTexture2DMultisampleEXT = nullptr;
+PFN_glRenderbufferStorageMultisampleEXT glRenderbufferStorageMultisampleEXT = nullptr;
+PFN_glGetProgramBinary glGetProgramBinary = nullptr;
+PFN_glProgramBinary glProgramBinary = nullptr;
+PFN_glProgramParameteri glProgramParameteri = nullptr;
+}  // namespace real
+
+double nowMs() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Command stream: entries of [replay function (8 bytes)][entry size (4)][pad (4)][arguments],
+// each a multiple of 8 bytes.
+using Replay = void (*)(const uint8_t*);
+constexpr size_t kHeader = 16;
+
+struct Batch {
+    std::vector<uint8_t> buf;
+    size_t used = 0;
+    bool frameEnd = false;
+};
+
+thread_local bool tRender = false;
+
+struct State {
+    std::mutex m;
+    std::condition_variable cvWork, cvDone;
+    std::deque<Batch*> queue;
+    std::vector<Batch*> freeList;
+    Batch* cur = nullptr;  // being recorded (engine thread only)
+    uint64_t submittedBatches = 0, doneBatches = 0, submittedFrames = 0, doneFrames = 0;
+    uint64_t syncSeq = 0, syncDone = 0;
+    bool quit = false;
+    std::thread thread;
+    std::function<void()> exitFn;
+    double replayMs = 0;  // render thread (under m)
+    Stats mainStats;      // engine thread
+    GLint unpackAlign = 4;
+    std::vector<GLuint> pools[5];
+};
+State* g = nullptr;
+
+// OYSTER_DEBUG_GLSYNC=1: count the synchronous calls per function (printed by stop())
+std::map<const void*, const char*> gNames;
+std::map<std::string, uint64_t> gSyncCounts;
+bool debugSync() {
+    static const bool on = std::getenv("OYSTER_DEBUG_GLSYNC") != nullptr;
+    return on;
+}
+void countSync(const void* var) {
+    if (!debugSync()) return;
+    auto it = gNames.find(var);
+    ++gSyncCounts[it != gNames.end() ? it->second : "?"];
+}
+
+uint8_t* alloc(Replay fn, size_t argBytes) {
+    size_t n = kHeader + ((argBytes + 7) & ~size_t(7));
+    Batch* b = g->cur;
+    if (b->used + n > b->buf.size()) b->buf.resize(std::max(b->buf.size() * 2, b->used + n + (size_t(1) << 16)));
+    uint8_t* p = b->buf.data() + b->used;
+    std::memcpy(p, &fn, sizeof(fn));
+    uint32_t sz = static_cast<uint32_t>(n);
+    std::memcpy(p + 8, &sz, 4);
+    b->used += n;
+    return p + kHeader;
+}
+
+void replayBatch(const Batch& b) {
+    size_t off = 0;
+    while (off < b.used) {
+        const uint8_t* p = b.buf.data() + off;
+        Replay fn;
+        std::memcpy(&fn, p, sizeof(fn));
+        uint32_t n;
+        std::memcpy(&n, p + 8, 4);
+        fn(p + kHeader);
+        off += n;
+    }
+}
+
+void submit(bool frameEnd) {
+    std::lock_guard<std::mutex> l(g->m);
+    if (g->cur->used == 0 && !frameEnd) return;
+    g->cur->frameEnd = frameEnd;
+    g->mainStats.bytes += g->cur->used;
+    g->queue.push_back(g->cur);
+    ++g->submittedBatches;
+    if (frameEnd) ++g->submittedFrames;
+    if (g->freeList.empty()) {
+        g->cur = new Batch;
+    } else {
+        g->cur = g->freeList.back();
+        g->freeList.pop_back();
+    }
+    g->cvWork.notify_one();
+}
+
+template <typename Pred>
+void waitFor(Pred pred) {
+    double t0 = nowMs();
+    std::unique_lock<std::mutex> l(g->m);
+    g->cvDone.wait(l, pred);
+    g->mainStats.waitMs += nowMs() - t0;
+}
+
+struct SyncArg {
+    const std::function<void()>* fn;
+    uint64_t id;
+};
+
+void replaySync(const uint8_t* p) {
+    const SyncArg& a = *reinterpret_cast<const SyncArg*>(p);
+    (*a.fn)();
+    {
+        std::lock_guard<std::mutex> l(g->m);
+        g->syncDone = a.id;
+    }
+    g->cvDone.notify_all();
+}
+
+// Executes fn on the render thread after everything recorded so far; returns when it has run.
+void runSync(const std::function<void()>& fn) {
+    ++g->mainStats.syncCalls;
+    uint64_t id = ++g->syncSeq;
+    new (alloc(&replaySync, sizeof(SyncArg))) SyncArg{&fn, id};
+    submit(false);
+    waitFor([&] { return g->syncDone >= id; });
+}
+
+void replayFunction(const uint8_t* p) {
+    std::function<void()>* f;
+    std::memcpy(&f, p, sizeof(f));
+    (*f)();
+    delete f;
+}
+
+// ---- stubs ---------------------------------------------------------------------------------
+
+template <auto* Var, typename Sig>
+struct Call;
+template <auto* Var, typename R, typename... A>
+struct Call<Var, R (*)(A...)> {
+    using Tup = std::tuple<A...>;
+    static void replay(const uint8_t* p) { std::apply(*Var, *reinterpret_cast<const Tup*>(p)); }
+    // recorded; arguments by value (pointers are buffer offsets)
+    static R async(A... a) {
+        static_assert(std::is_void_v<R>, "only calls without a result are recorded");
+        if (tRender) return (*Var)(a...);
+        new (alloc(&replay, sizeof(Tup))) Tup(a...);
+    }
+    // executed on the render thread while the caller waits
+    static R sync(A... a) {
+        if (tRender) return (*Var)(a...);
+        countSync(Var);
+        if constexpr (std::is_void_v<R>) {
+            std::function<void()> f = [&] { (*Var)(a...); };
+            runSync(f);
+        } else {
+            R r{};
+            std::function<void()> f = [&] { r = (*Var)(a...); };
+            runSync(f);
+            return r;
+        }
+    }
+};
+
+constexpr size_t pad8(size_t n) { return (n + 7) & ~size_t(7); }
+
+template <auto* Var, typename T, int K>
+struct UniformV {
+    struct H {
+        GLint loc;
+        GLsizei count;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        (*Var)(h.loc, h.count, reinterpret_cast<const T*>(p + pad8(sizeof(H))));
+    }
+    static void call(GLint loc, GLsizei count, const T* v) {
+        if (tRender) return (*Var)(loc, count, v);
+        size_t n = count > 0 && v ? static_cast<size_t>(count) * K * sizeof(T) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{loc, count};
+        if (n) std::memcpy(p + pad8(sizeof(H)), v, n);
+    }
+};
+
+struct UniformMat4 {
+    struct H {
+        GLint loc;
+        GLsizei count;
+        GLboolean transpose;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        real::glUniformMatrix4fv(h.loc, h.count, h.transpose, reinterpret_cast<const GLfloat*>(p + pad8(sizeof(H))));
+    }
+    static void call(GLint loc, GLsizei count, GLboolean transpose, const GLfloat* v) {
+        if (tRender) return real::glUniformMatrix4fv(loc, count, transpose, v);
+        size_t n = count > 0 && v ? static_cast<size_t>(count) * 16 * sizeof(GLfloat) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{loc, count, transpose};
+        if (n) std::memcpy(p + pad8(sizeof(H)), v, n);
+    }
+};
+
+struct BufferData {
+    struct H {
+        GLenum target;
+        GLenum usage;
+        GLsizeiptr size;
+        bool data;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        real::glBufferData(h.target, h.size, h.data ? p + pad8(sizeof(H)) : nullptr, h.usage);
+    }
+    static void call(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
+        if (tRender) return real::glBufferData(target, size, data, usage);
+        size_t n = data && size > 0 ? static_cast<size_t>(size) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{target, usage, size, data != nullptr};
+        if (n) std::memcpy(p + pad8(sizeof(H)), data, n);
+    }
+};
+
+struct BufferSubData {
+    struct H {
+        GLenum target;
+        GLintptr offset;
+        GLsizeiptr size;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        real::glBufferSubData(h.target, h.offset, h.size, p + pad8(sizeof(H)));
+    }
+    static void call(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
+        if (tRender || !data) return Call<&real::glBufferSubData, PFN_glBufferSubData>::sync(target, offset, size, data);
+        size_t n = size > 0 ? static_cast<size_t>(size) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{target, offset, size};
+        if (n) std::memcpy(p + pad8(sizeof(H)), data, n);
+    }
+};
+
+template <auto* Var, typename T>
+struct ArrayCall {  // f(n, const T*) and f(target, n, const T*)
+    struct H {
+        GLenum target;
+        GLsizei n;
+    };
+    static void replay1(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        (*Var)(h.n, reinterpret_cast<const T*>(p + pad8(sizeof(H))));
+    }
+    static void replay2(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        (*Var)(h.target, h.n, reinterpret_cast<const T*>(p + pad8(sizeof(H))));
+    }
+    static void record(Replay fn, GLenum target, GLsizei n, const T* v) {
+        size_t bytes = n > 0 && v ? static_cast<size_t>(n) * sizeof(T) : 0;
+        uint8_t* p = alloc(fn, pad8(sizeof(H)) + bytes);
+        new (p) H{target, bytes ? n : 0};
+        if (bytes) std::memcpy(p + pad8(sizeof(H)), v, bytes);
+    }
+    static void call1(GLsizei n, const T* v) {
+        if (tRender) return (*Var)(n, v);
+        record(&replay1, 0, n, v);
+    }
+    static void call2(GLenum target, GLsizei n, const T* v) {
+        if (tRender) return (*Var)(target, n, v);
+        record(&replay2, target, n, v);
+    }
+};
+
+struct CompressedTexImage {
+    struct H {
+        GLenum target, ifmt;
+        GLint level, border;
+        GLsizei w, h, size;
+        bool data;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        real::glCompressedTexImage2D(h.target, h.level, h.ifmt, h.w, h.h, h.border, h.size,
+                                     h.data ? p + pad8(sizeof(H)) : nullptr);
+    }
+    static void call(GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei hh, GLint border, GLsizei size,
+                     const void* data) {
+        if (tRender) return real::glCompressedTexImage2D(target, level, ifmt, w, hh, border, size, data);
+        size_t n = data && size > 0 ? static_cast<size_t>(size) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{target, ifmt, level, border, w, hh, size, data != nullptr};
+        if (n) std::memcpy(p + pad8(sizeof(H)), data, n);
+    }
+};
+
+struct TexImage {
+    struct H {
+        GLenum target;
+        GLint level, ifmt;
+        GLsizei w, h;
+        GLint border;
+        GLenum format, type;
+        bool data;
+    };
+    static void replay(const uint8_t* p) {
+        const H& h = *reinterpret_cast<const H*>(p);
+        real::glTexImage2D(h.target, h.level, h.ifmt, h.w, h.h, h.border, h.format, h.type,
+                           h.data ? p + pad8(sizeof(H)) : nullptr);
+    }
+    static void call(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei hh, GLint border, GLenum format,
+                     GLenum type, const void* data) {
+        int bpp = type != GL_UNSIGNED_BYTE ? 0 : format == GL_RGBA ? 4 : format == GL_RGB ? 3 : 0;
+        if (tRender || (data && bpp == 0))  // unknown layout: let the driver read it while we wait
+            return Call<&real::glTexImage2D, PFN_glTexImage2D>::sync(target, level, ifmt, w, hh, border, format, type, data);
+        size_t a = static_cast<size_t>(std::max<GLint>(1, g->unpackAlign));
+        size_t row = (static_cast<size_t>(std::max(0, w)) * static_cast<size_t>(bpp) + a - 1) / a * a;
+        size_t n = data ? row * static_cast<size_t>(std::max(0, hh)) : 0;
+        uint8_t* p = alloc(&replay, pad8(sizeof(H)) + n);
+        new (p) H{target, level, ifmt, w, hh, border, format, type, data != nullptr};
+        if (n) std::memcpy(p + pad8(sizeof(H)), data, n);
+    }
+};
+
+void pixelStorei(GLenum pname, GLint v) {
+    if (!tRender && pname == GL_UNPACK_ALIGNMENT) g->unpackAlign = v;
+    Call<&real::glPixelStorei, PFN_glPixelStorei>::async(pname, v);
+}
+
+// glGen*: names from a pool, refilled 64 at a time with one synchronous call
+template <auto* Var, int Pool>
+void gen(GLsizei n, GLuint* out) {
+    if (tRender) return (*Var)(n, out);
+    std::vector<GLuint>& pool = g->pools[Pool];
+    while (pool.size() < static_cast<size_t>(std::max(0, n))) {
+        countSync(Var);
+        GLuint tmp[64];
+        std::function<void()> f = [&] { (*Var)(64, tmp); };
+        runSync(f);
+        pool.insert(pool.end(), tmp, tmp + 64);
+    }
+    for (GLsizei i = 0; i < n; ++i) {
+        out[i] = pool.back();
+        pool.pop_back();
+    }
+}
+
+void renderMain(std::function<void()> init) {
+    tRender = true;
+    init();
+    for (;;) {
+        Batch* b;
+        {
+            std::unique_lock<std::mutex> l(g->m);
+            g->cvWork.wait(l, [] { return !g->queue.empty() || g->quit; });
+            if (g->queue.empty()) break;
+            b = g->queue.front();
+            g->queue.pop_front();
+        }
+        double t0 = nowMs();
+        replayBatch(*b);
+        double t1 = nowMs();
+        {
+            std::lock_guard<std::mutex> l(g->m);
+            g->replayMs += t1 - t0;
+            ++g->doneBatches;
+            if (b->frameEnd) ++g->doneFrames;
+            b->used = 0;
+            b->frameEnd = false;
+            g->freeList.push_back(b);
+        }
+        g->cvDone.notify_all();
+    }
+    if (g->exitFn) g->exitFn();
+}
+
+void install() {
+#define OYSTER_GL_SAVE(ret, name, args) real::name = oyster::gl::name; gNames[&real::name] = #name;
+    OYSTER_GL_FUNCS(OYSTER_GL_SAVE)
+#undef OYSTER_GL_SAVE
+    real::glInvalidateFramebuffer = oyster::gl::glInvalidateFramebuffer;
+    real::glFramebufferTexture2DMultisampleEXT = oyster::gl::glFramebufferTexture2DMultisampleEXT;
+    real::glRenderbufferStorageMultisampleEXT = oyster::gl::glRenderbufferStorageMultisampleEXT;
+    real::glGetProgramBinary = oyster::gl::glGetProgramBinary;
+    real::glProgramBinary = oyster::gl::glProgramBinary;
+    real::glProgramParameteri = oyster::gl::glProgramParameteri;
+
+    // default: synchronous (correct for every call); then the recorded ones
+#define OYSTER_GL_SYNC(ret, name, args) oyster::gl::name = &Call<&real::name, PFN_##name>::sync;
+    OYSTER_GL_FUNCS(OYSTER_GL_SYNC)
+#undef OYSTER_GL_SYNC
+#define ASYNC(name) oyster::gl::name = &Call<&real::name, PFN_##name>::async;
+    ASYNC(glEnable) ASYNC(glDisable) ASYNC(glBlendFuncSeparate) ASYNC(glBlendEquationSeparate) ASYNC(glBlendColor)
+    ASYNC(glDepthFunc) ASYNC(glDepthMask) ASYNC(glDepthRangef) ASYNC(glColorMask) ASYNC(glCullFace)
+    ASYNC(glFrontFace) ASYNC(glPolygonOffset) ASYNC(glStencilFunc) ASYNC(glStencilOp) ASYNC(glStencilMask)
+    ASYNC(glScissor) ASYNC(glViewport) ASYNC(glClearColor) ASYNC(glClearDepthf) ASYNC(glClearStencil)
+    ASYNC(glClear) ASYNC(glBindTexture) ASYNC(glTexParameteri) ASYNC(glActiveTexture) ASYNC(glBindBuffer)
+    ASYNC(glBindVertexArray) ASYNC(glEnableVertexAttribArray) ASYNC(glDisableVertexAttribArray)
+    ASYNC(glVertexAttribPointer) ASYNC(glVertexAttrib4f) ASYNC(glUseProgram) ASYNC(glUniform1i)
+    ASYNC(glDrawElements) ASYNC(glDrawArrays) ASYNC(glBindFramebuffer) ASYNC(glFramebufferTexture2D)
+    ASYNC(glFramebufferRenderbuffer) ASYNC(glBindRenderbuffer) ASYNC(glRenderbufferStorage)
+    ASYNC(glRenderbufferStorageMultisample) ASYNC(glBlitFramebuffer) ASYNC(glDeleteProgram) ASYNC(glFlush)
+#undef ASYNC
+    oyster::gl::glUniform1iv = &UniformV<&real::glUniform1iv, GLint, 1>::call;
+    oyster::gl::glUniform1fv = &UniformV<&real::glUniform1fv, GLfloat, 1>::call;
+    oyster::gl::glUniform2fv = &UniformV<&real::glUniform2fv, GLfloat, 2>::call;
+    oyster::gl::glUniform3fv = &UniformV<&real::glUniform3fv, GLfloat, 3>::call;
+    oyster::gl::glUniform4fv = &UniformV<&real::glUniform4fv, GLfloat, 4>::call;
+    oyster::gl::glUniformMatrix4fv = &UniformMat4::call;
+    oyster::gl::glBufferData = &BufferData::call;
+    oyster::gl::glBufferSubData = &BufferSubData::call;
+    oyster::gl::glCompressedTexImage2D = &CompressedTexImage::call;
+    oyster::gl::glTexImage2D = &TexImage::call;
+    oyster::gl::glPixelStorei = &pixelStorei;
+    oyster::gl::glDeleteTextures = &ArrayCall<&real::glDeleteTextures, GLuint>::call1;
+    oyster::gl::glDeleteBuffers = &ArrayCall<&real::glDeleteBuffers, GLuint>::call1;
+    oyster::gl::glDeleteVertexArrays = &ArrayCall<&real::glDeleteVertexArrays, GLuint>::call1;
+    oyster::gl::glDeleteFramebuffers = &ArrayCall<&real::glDeleteFramebuffers, GLuint>::call1;
+    oyster::gl::glDeleteRenderbuffers = &ArrayCall<&real::glDeleteRenderbuffers, GLuint>::call1;
+    oyster::gl::glGenTextures = &gen<&real::glGenTextures, 0>;
+    oyster::gl::glGenBuffers = &gen<&real::glGenBuffers, 1>;
+    oyster::gl::glGenVertexArrays = &gen<&real::glGenVertexArrays, 2>;
+    oyster::gl::glGenFramebuffers = &gen<&real::glGenFramebuffers, 3>;
+    oyster::gl::glGenRenderbuffers = &gen<&real::glGenRenderbuffers, 4>;
+    if (real::glInvalidateFramebuffer)
+        oyster::gl::glInvalidateFramebuffer = &ArrayCall<&real::glInvalidateFramebuffer, GLenum>::call2;
+    if (real::glFramebufferTexture2DMultisampleEXT)
+        oyster::gl::glFramebufferTexture2DMultisampleEXT =
+            &Call<&real::glFramebufferTexture2DMultisampleEXT, PFN_glFramebufferTexture2DMultisampleEXT>::async;
+    if (real::glRenderbufferStorageMultisampleEXT)
+        oyster::gl::glRenderbufferStorageMultisampleEXT =
+            &Call<&real::glRenderbufferStorageMultisampleEXT, PFN_glRenderbufferStorageMultisampleEXT>::async;
+    if (real::glGetProgramBinary)
+        oyster::gl::glGetProgramBinary = &Call<&real::glGetProgramBinary, PFN_glGetProgramBinary>::sync;
+    if (real::glProgramBinary) oyster::gl::glProgramBinary = &Call<&real::glProgramBinary, PFN_glProgramBinary>::sync;
+    if (real::glProgramParameteri)
+        oyster::gl::glProgramParameteri = &Call<&real::glProgramParameteri, PFN_glProgramParameteri>::sync;
+}
+
+void uninstall() {
+#define OYSTER_GL_RESTORE(ret, name, args) oyster::gl::name = real::name;
+    OYSTER_GL_FUNCS(OYSTER_GL_RESTORE)
+#undef OYSTER_GL_RESTORE
+    oyster::gl::glInvalidateFramebuffer = real::glInvalidateFramebuffer;
+    oyster::gl::glFramebufferTexture2DMultisampleEXT = real::glFramebufferTexture2DMultisampleEXT;
+    oyster::gl::glRenderbufferStorageMultisampleEXT = real::glRenderbufferStorageMultisampleEXT;
+    oyster::gl::glGetProgramBinary = real::glGetProgramBinary;
+    oyster::gl::glProgramBinary = real::glProgramBinary;
+    oyster::gl::glProgramParameteri = real::glProgramParameteri;
+}
+
+}  // namespace
+
+void start(std::function<void()> init, std::function<void()> exit) {
+    if (g) return;
+    g = new State;
+    g->cur = new Batch;
+    g->exitFn = std::move(exit);
+    install();
+    g->thread = std::thread(renderMain, std::move(init));
+}
+
+void stop() {
+    if (!g) return;
+    finish();
+    {
+        std::lock_guard<std::mutex> l(g->m);
+        g->quit = true;
+    }
+    g->cvWork.notify_all();
+    g->thread.join();
+    uninstall();
+    for (const auto& kv : gSyncCounts) std::fprintf(stderr, "gl sync %-28s %llu\n", kv.first.c_str(), static_cast<unsigned long long>(kv.second));
+    delete g->cur;
+    for (Batch* b : g->freeList) delete b;
+    delete g;
+    g = nullptr;
+}
+
+bool active() { return g != nullptr; }
+bool onRenderThread() { return tRender; }
+
+void enqueue(std::function<void()> fn) {
+    if (!g || tRender) {
+        fn();
+        return;
+    }
+    auto* f = new std::function<void()>(std::move(fn));
+    std::memcpy(alloc(&replayFunction, sizeof(f)), &f, sizeof(f));
+}
+
+void flush() {
+    if (g && !tRender) submit(false);
+}
+
+void endFrame(int maxAhead) {
+    if (!g || tRender) return;
+    submit(true);
+    uint64_t target = g->submittedFrames > static_cast<uint64_t>(maxAhead) ? g->submittedFrames - static_cast<uint64_t>(maxAhead) : 0;
+    waitFor([&] { return g->doneFrames >= target; });
+}
+
+void finish() {
+    if (!g || tRender) return;
+    submit(false);
+    uint64_t target = g->submittedBatches;
+    waitFor([&] { return g->doneBatches >= target; });
+}
+
+Stats stats() {
+    if (!g) return Stats();
+    std::lock_guard<std::mutex> l(g->m);
+    Stats s = g->mainStats;
+    s.replayMs = g->replayMs;
+    s.frames = g->doneFrames;
+    return s;
+}
+
+}  // namespace oyster::gl::threaded

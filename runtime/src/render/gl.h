@@ -15,6 +15,8 @@ typedef char GLchar;
 typedef unsigned char GLubyte;
 typedef std::ptrdiff_t GLsizeiptr;
 typedef std::ptrdiff_t GLintptr;
+typedef uint64_t GLuint64;
+typedef struct __GLsync* GLsync;
 
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -74,6 +76,8 @@ typedef std::ptrdiff_t GLintptr;
 #define GL_STENCIL_BUFFER_BIT 0x00000400
 #define GL_PACK_ALIGNMENT 0x0D05
 #define GL_UNPACK_ALIGNMENT 0x0CF5
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#define GL_SYNC_FLUSH_COMMANDS_BIT 0x00000001
 #define GL_VENDOR 0x1F00
 #define GL_RENDERER 0x1F01
 #define GL_VERSION 0x1F02
@@ -169,6 +173,10 @@ typedef std::ptrdiff_t GLintptr;
     X(void, glRenderbufferStorage, (GLenum, GLenum, GLsizei, GLsizei))                             \
     X(void, glRenderbufferStorageMultisample, (GLenum, GLsizei, GLenum, GLsizei, GLsizei))         \
     X(void, glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
+    X(void, glFlush, (void))                                                                       \
+    X(GLsync, glFenceSync, (GLenum, GLbitfield))                                                   \
+    X(GLenum, glClientWaitSync, (GLsync, GLbitfield, GLuint64))                                    \
+    X(void, glDeleteSync, (GLsync))                                                                \
     X(void, glFinish, (void))
 
 namespace oyster::gl {

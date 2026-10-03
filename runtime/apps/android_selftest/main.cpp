@@ -5,6 +5,8 @@
 //
 // Usage (device): oyster_selftest <pearl data> [frames=3000] [hz=72] [eyeW eyeH [msaa=2]]
 //   e.g. adb push oyster_selftest /data/local/tmp && adb shell /data/local/tmp/oyster_selftest /sdcard/Oyster/pearl 6000
+// GL runs on a render thread like in the app (render/gl_thread.h; OYSTER_THREADED=0: single
+// thread, glFinish after every frame). Threaded, the GPU may run two frames behind (fences).
 #include <EGL/egl.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -14,10 +16,13 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <string>
+#include <vector>
 
 #include "core/pkgfs.h"
 #include "render/gl.h"
+#include "render/gl_thread.h"
 #include "render/renderer.h"
 #include "story/engine.h"
 
@@ -73,6 +78,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("GL %s / %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    const char* thr = std::getenv("OYSTER_THREADED");
+    bool threaded = !thr || std::string(thr) != "0";
+    if (threaded) {
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        gl::threaded::start([=] { eglMakeCurrent(dpy, surf, surf, ctx); },
+                            [=] { eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); });
+        std::printf("render thread on\n");
+    }
     try {
         double t0 = nowMs();
         PackageFS fs(root);
@@ -107,7 +120,16 @@ int main(int argc, char** argv) {
             std::string name;
             int frames = 0, over = 0;
             double cpu = 0, gpu = 0, piped = 0, worst = 0;
+            double render = 0;  // threaded: render thread replay
         };
+        // threaded: per frame, written on the render thread (replay time, wait for the GPU fence)
+        struct RenderStat {
+            double start = 0, replay = 0, gpuWait = 0;
+        };
+        std::vector<RenderStat> rstat(static_cast<size_t>(std::max(0, frames)));
+        std::vector<int> frameState(static_cast<size_t>(std::max(0, frames)), 0);
+        std::deque<GLsync> fences;  // render thread only
+        double lastEnd = 0;
         std::vector<StateStat> states(1);
         states[0].name = "(start)";
         // OYSTER_SKIP_TO=<state>: run the story without rendering until that state is entered
@@ -131,20 +153,44 @@ int main(int argc, char** argv) {
             size_t loads = rr.texLoads;
             double tex = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs;
             double f0 = nowMs();
+            RenderStat* rs = &rstat[static_cast<size_t>(i)];
+            if (threaded) gl::threaded::enqueue([rs] { rs->start = nowMs(); });
             if (!engine.frame(0)) std::printf("frame %d: Lua error\n", i);
             double f1 = nowMs();
-            glFinish();
-            double ms = nowMs() - f0;
-            double cpuMs = f1 - f0, gpuWait = ms - cpuMs;
+            double ms, cpuMs = f1 - f0, gpuWait;
+            if (threaded) {
+                // end of frame on the render thread: fence; keep at most two frames on the GPU
+                gl::threaded::enqueue([rs, &fences] {
+                    double t = nowMs();
+                    rs->replay = t - rs->start;
+                    fences.push_back(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+                    while (fences.size() > 2) {
+                        glClientWaitSync(fences.front(), GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+                        glDeleteSync(fences.front());
+                        fences.pop_front();
+                    }
+                    rs->gpuWait = nowMs() - t;
+                });
+                gl::threaded::endFrame(1);
+                double f2 = nowMs();
+                ms = lastEnd > 0 ? f2 - lastEnd : f2 - f0;  // frame period
+                lastEnd = f2;
+                gpuWait = 0;
+            } else {
+                glFinish();
+                ms = nowMs() - f0;
+                gpuWait = ms - cpuMs;
+            }
+            frameState[static_cast<size_t>(i)] = static_cast<int>(states.size()) - 1;
             StateStat& st = states.back();
             ++st.frames;
             st.cpu += cpuMs;
             st.gpu += gpuWait;
             double piped = std::max(cpuMs, ms);  // GPU work >= the time we waited for it after submission
             piped = std::max(cpuMs, gpuWait + 0.0);
-            st.piped += std::max(cpuMs, ms - cpuMs > 0 ? ms - cpuMs : 0.0);
+            st.piped += threaded ? ms : std::max(cpuMs, ms - cpuMs > 0 ? ms - cpuMs : 0.0);
             st.worst = std::max(st.worst, ms);
-            if (std::max(cpuMs, gpuWait) > budget) ++st.over;
+            if (threaded ? ms > budget * 1.02 : std::max(cpuMs, gpuWait) > budget) ++st.over;
             (void)piped;
             const auto& log = engine.lua().log;
             for (; logShown < log.size(); ++logShown) {
@@ -175,21 +221,45 @@ int main(int argc, char** argv) {
                 rr.texLoads = 0;
             }
         }
-        std::printf("\n%-34s %7s %8s %8s %9s %9s %6s\n", "state", "frames", "CPU ms", "GPU ms", "frame ms", "max ms", "over");
-        for (const StateStat& st : states) {
-            if (!st.frames) continue;
-            double n = st.frames;
-            std::printf("%-34s %7d %8.2f %8.2f %9.2f %9.1f %5.0f%%\n", st.name.c_str(), st.frames, st.cpu / n, st.gpu / n,
-                        st.piped / n, st.worst, 100.0 * st.over / n);
+        if (threaded) {
+            gl::threaded::finish();
+            for (size_t f = 0; f < rstat.size(); ++f) {
+                StateStat& st = states[static_cast<size_t>(frameState[f])];
+                st.render += rstat[f].replay;
+                st.gpu += rstat[f].gpuWait;
+            }
+            std::printf("\n%-34s %7s %8s %9s %8s %9s %9s %6s\n", "state", "frames", "main ms", "render ms", "GPU ms",
+                        "frame ms", "max ms", "over");
+            for (const StateStat& st : states) {
+                if (!st.frames) continue;
+                double n = st.frames;
+                std::printf("%-34s %7d %8.2f %9.2f %8.2f %9.2f %9.1f %5.0f%%\n", st.name.c_str(), st.frames, st.cpu / n,
+                            st.render / n, st.gpu / n, st.piped / n, st.worst, 100.0 * st.over / n);
+            }
+            gl::threaded::Stats ts = gl::threaded::stats();
+            std::printf("(main = engine thread (story, animation, recording); render = GL replay on the render thread;\n"
+                        " GPU = render thread waiting for the frame before last; frame = measured frame period;\n"
+                        " over = frames longer than %.1f ms; %llu synchronous GL calls)\n",
+                        budget, static_cast<unsigned long long>(ts.syncCalls));
+        } else {
+            std::printf("\n%-34s %7s %8s %8s %9s %9s %6s\n", "state", "frames", "CPU ms", "GPU ms", "frame ms", "max ms", "over");
+            for (const StateStat& st : states) {
+                if (!st.frames) continue;
+                double n = st.frames;
+                std::printf("%-34s %7d %8.2f %8.2f %9.2f %9.1f %5.0f%%\n", st.name.c_str(), st.frames, st.cpu / n, st.gpu / n,
+                            st.piped / n, st.worst, 100.0 * st.over / n);
+            }
+            std::printf("(GPU ms = wait for the GPU after the CPU work; frame ms = max(CPU, GPU), the pipelined frame time;\n"
+                        " over = frames whose CPU or GPU part exceeds %.1f ms)\n", budget);
         }
-        std::printf("(GPU ms = wait for the GPU after the CPU work; frame ms = max(CPU, GPU), the pipelined frame time;\n"
-                    " over = frames whose CPU or GPU part exceeds %.1f ms)\n", budget);
         std::printf("done: %llu frames, story time %.1f s, average %.2f ms per frame, %d frames over budget\n",
                     static_cast<unsigned long long>(engine.frameIndex), static_cast<double>(engine.time().elapsedUs) * 1e-6,
                     all / static_cast<double>(std::max<uint64_t>(1, engine.frameIndex)), overAll);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "self test failed: %s\n", e.what());
+        gl::threaded::stop();
         return 1;
     }
+    gl::threaded::stop();
     return 0;
 }

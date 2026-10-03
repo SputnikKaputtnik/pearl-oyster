@@ -20,6 +20,7 @@
 
 #include "core/pkgfs.h"
 #include "render/gl.h"
+#include "render/gl_thread.h"
 #include "render/renderer.h"
 #include "story/engine.h"
 
@@ -34,6 +35,7 @@ struct Args {
     double fixedMs = 33.3333;
     long frames = 0, dumpFrom = 0, dumpEvery = 1, status = 0;
     bool window = false, remaster = false, log = false, mute = false;
+    bool threaded = false;  // GL calls on a render thread (render/gl_thread.h)
     bool vr = false;  // desktop HMD emulation: stereo, head = mouse (docs/vr.md)
     int eyeW = 1024, eyeH = 1056;
 };
@@ -60,6 +62,7 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--wav") a.wav = next();
         else if (k == "--mute") a.mute = true;
         else if (k == "--vr") a.vr = true;
+        else if (k == "--threaded") a.threaded = true;
         else if (k == "--eye") { std::string s = next(); std::sscanf(s.c_str(), "%dx%d", &a.eyeW, &a.eyeH); }
         else {
             std::fprintf(stderr, "unknown argument %s\n", k.c_str());
@@ -134,6 +137,10 @@ int main(int argc, char** argv) {
     if (!ctx) { std::fprintf(stderr, "GLES 3.0 context: %s\n", SDL_GetError()); return 1; }
     if (const char* missing = gl::load(SDL_GL_GetProcAddress)) { std::fprintf(stderr, "missing GL function %s\n", missing); return 1; }
     if (args.window) SDL_GL_SetSwapInterval(1);
+    if (args.threaded) {
+        SDL_GL_MakeCurrent(win, nullptr);
+        gl::threaded::start([win, ctx] { SDL_GL_MakeCurrent(win, ctx); }, [win] { SDL_GL_MakeCurrent(win, nullptr); });
+    }
 
     int rc = 0;
     try {
@@ -294,8 +301,9 @@ print(s))lua", "=status");
                     glBlitFramebuffer(0, 0, e0->width, e0->height, 0, 0, args.w / 2, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
                     glBindFramebuffer(GL_READ_FRAMEBUFFER, e1->fbo);
                     glBlitFramebuffer(0, 0, e1->width, e1->height, args.w / 2, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                    SDL_GL_SwapWindow(win);
+                    gl::threaded::enqueue([win] { SDL_GL_SwapWindow(win); });
                 }
+                gl::threaded::endFrame(1);
                 if (engine.exitRequested) break;
                 continue;
             }
@@ -314,11 +322,20 @@ print(s))lua", "=status");
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, out->fbo);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 glBlitFramebuffer(0, 0, out->width, out->height, 0, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                SDL_GL_SwapWindow(win);
+                gl::threaded::enqueue([win] { SDL_GL_SwapWindow(win); });
             }
+            gl::threaded::endFrame(1);
             if (engine.exitRequested) break;
         }
         if (dev) SDL_CloseAudioDevice(dev);
+        if (args.threaded) {
+            gl::threaded::Stats ts = gl::threaded::stats();
+            std::printf("render thread: %llu frames, replay %.2f ms/frame, engine thread waited %.2f ms/frame, %llu sync "
+                        "calls, %.2f MB/frame recorded\n",
+                        static_cast<unsigned long long>(ts.frames), ts.replayMs / std::max<double>(1, ts.frames),
+                        ts.waitMs / std::max<double>(1, ts.frames), static_cast<unsigned long long>(ts.syncCalls),
+                        static_cast<double>(ts.bytes) / 1048576.0 / std::max<double>(1, ts.frames));
+        }
         std::printf("frames: %llu, story time %.3f s\n", static_cast<unsigned long long>(engine.frameIndex),
                     static_cast<double>(engine.time().elapsedUs) * 1e-6);
         std::printf("unimplemented original natives called:\n");
@@ -326,6 +343,10 @@ print(s))lua", "=status");
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         rc = 1;
+    }
+    if (args.threaded) {
+        gl::threaded::stop();
+        SDL_GL_MakeCurrent(win, ctx);
     }
     SDL_GL_DeleteContext(ctx);
     SDL_DestroyWindow(win);

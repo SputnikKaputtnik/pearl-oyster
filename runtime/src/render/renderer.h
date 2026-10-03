@@ -108,6 +108,9 @@ public:
             float v[16];
         };
         std::vector<Cached> ucache;
+        // locations looked up by name (particle shaders), cached: queries are round trips to the
+        // render thread when it is active
+        std::unordered_map<std::string, GLint> namedUniform, namedAttrib;
     };
     Program* program(const std::string& uri);
     // Shader programs: compiled on first use; with a cache directory the driver's program

@@ -30,6 +30,7 @@
 
 #include "core/pkgfs.h"
 #include "render/gl.h"
+#include "render/gl_thread.h"
 #include "render/renderer.h"
 #include "story/engine.h"
 
@@ -130,6 +131,7 @@ struct App {
     uint64_t frames = 0;
     double statMs = 0, statMax = 0;
     int statFrames = 0;
+    gl::threaded::Stats statThread;  // render thread totals at the last perf line
 };
 
 // Pearl data: shared storage /sdcard/Oyster/pearl (adb-pushed, needs "all files access"), else
@@ -428,6 +430,27 @@ void startEngine(App& a) {
     }
 }
 
+// From here on the GL context belongs to a render thread (render/gl_thread.h): the engine
+// thread records the GL calls of frame N+1 while the render thread replays frame N, so the
+// driver work runs on its own core. /sdcard/Oyster/singlethread keeps everything on one thread.
+void startRenderThread(App& a) {
+    if (access((std::string(kSharedRoot) + "/singlethread").c_str(), F_OK) == 0) {
+        LOGI("render thread disabled (singlethread flag file)");
+        return;
+    }
+    EGLDisplay d = a.display;
+    EGLSurface s = a.surface;
+    EGLContext c = a.context;
+    eglMakeCurrent(d, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    gl::threaded::start(
+        [d, s, c] {
+            if (!eglMakeCurrent(d, s, s, c)) LOGE("render thread: eglMakeCurrent failed 0x%x", eglGetError());
+            pthread_setname_np(pthread_self(), "OysterRender");
+        },
+        [d] { eglMakeCurrent(d, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); });
+    LOGI("render thread started");
+}
+
 void bootStory(App& a) {
     try {
         if (!a.engine->boot()) throw std::runtime_error("story boot failed: " + a.engine->lua().lastError());
@@ -462,6 +485,7 @@ void handleXrEvents(App& a) {
                 bi.primaryViewConfigurationType = kViewConfig;
                 a.running = xrOk("xrBeginSession", xrBeginSession(a.session, &bi));
             } else if (a.state == XR_SESSION_STATE_STOPPING) {
+                gl::threaded::finish();
                 xrEndSession(a.session);
                 a.running = false;
             } else if (a.state == XR_SESSION_STATE_EXITING || a.state == XR_SESSION_STATE_LOSS_PENDING) {
@@ -472,7 +496,148 @@ void handleXrEvents(App& a) {
     }
 }
 
+// Head pose and per-eye field of view for the engine; story time step from the display times.
+double updateHead(App& a, const XrFrameState& fs, const XrView views[2], bool focused) {
+    story::HmdState& h = a.engine->hmd();
+    const XrVector3f &p0 = views[0].pose.position, &p1 = views[1].pose.position;
+    h.position = Vec3((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f, (p0.z + p1.z) * 0.5f);
+    const XrQuaternionf& q = views[0].pose.orientation;
+    h.orientation = Quat(q.x, q.y, q.z, q.w);
+    float dx = p1.x - p0.x, dy = p1.y - p0.y, dz = p1.z - p0.z;
+    float ipd = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (ipd > 0.04f && ipd < 0.09f) h.ipd = ipd;
+    for (int e = 0; e < 2; ++e) {
+        h.eye[e].tanLeft = std::tan(views[e].fov.angleLeft);
+        h.eye[e].tanRight = std::tan(views[e].fov.angleRight);
+        h.eye[e].tanUp = std::tan(views[e].fov.angleUp);
+        h.eye[e].tanDown = std::tan(views[e].fov.angleDown);
+    }
+    // story time runs only while the user is in the experience (focused)
+    double dt = 0;
+    if (focused && a.lastDisplayTime != 0)
+        dt = std::min(0.1, std::max(0.0, static_cast<double>(fs.predictedDisplayTime - a.lastDisplayTime) * 1e-9));
+    a.lastDisplayTime = focused ? fs.predictedDisplayTime : 0;
+    return dt;
+}
+
+// What the render thread needs to finish a frame (captured on the engine thread).
+struct FrameOut {
+    XrTime displayTime = 0;
+    bool render = false;
+    XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+    GLuint srcFbo[2] = {};
+    int srcW[2] = {}, srcH[2] = {};
+};
+
+// Render thread: eye images into the swapchains, then xrEndFrame.
+void submitFrame(App& a, const FrameOut& o) {
+    XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
+    ei.displayTime = o.displayTime;
+    ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+                                             {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
+    if (o.render) {
+        for (int e = 0; e < 2; ++e) {
+            Swapchain& s = a.swapchains[e];
+            uint32_t idx = 0;
+            XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            xrAcquireSwapchainImage(s.handle, &ai, &idx);
+            XrSwapchainImageWaitInfo wi2{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            wi2.timeout = XR_INFINITE_DURATION;
+            xrWaitSwapchainImage(s.handle, &wi2);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.fbos[idx]);
+            if (a.srgbWriteControl) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+            glDisable(GL_SCISSOR_TEST);  // blits honour the scissor test
+            if (o.srcFbo[e]) {
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, o.srcFbo[e]);
+                glBlitFramebuffer(0, 0, o.srcW[e], o.srcH[e], 0, 0, s.width, s.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            xrReleaseSwapchainImage(s.handle, &ri);
+            pv[e].pose = o.views[e].pose;
+            pv[e].fov = o.views[e].fov;
+            pv[e].subImage.swapchain = s.handle;
+            pv[e].subImage.imageRect.extent = {s.width, s.height};
+        }
+        layer.space = a.space;
+        layer.viewCount = 2;
+        layer.views = pv;
+        ei.layerCount = 1;
+        ei.layers = layers;
+    }
+    xrEndFrame(a.session, &ei);
+}
+
+// Frame with the render thread: the engine thread waits for the frame slot, begins the frame on
+// the render thread right away (so the next xrWaitFrame can return while this frame is drawn),
+// runs the story and records its GL calls; the render thread replays them and submits.
+void frameThreaded(App& a) {
+    XrFrameState fs{XR_TYPE_FRAME_STATE};
+    XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
+    if (!xrOk("xrWaitFrame", xrWaitFrame(a.session, &wi, &fs))) return;
+    XrSession session = a.session;
+    gl::threaded::enqueue([session] {
+        XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
+        xrOk("xrBeginFrame", xrBeginFrame(session, &bi));
+    });
+    gl::threaded::flush();
+    auto out = std::make_shared<FrameOut>();
+    out->displayTime = fs.predictedDisplayTime;
+    bool focused = a.state == XR_SESSION_STATE_FOCUSED;
+    setAudio(a, focused && a.engine);
+    double frameMs = 0;
+    if (fs.shouldRender && a.engine) {
+        XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
+        li.viewConfigurationType = kViewConfig;
+        li.displayTime = fs.predictedDisplayTime;
+        li.space = a.space;
+        XrViewState vs{XR_TYPE_VIEW_STATE};
+        uint32_t vc = 0;
+        if (xrOk("xrLocateViews", xrLocateViews(a.session, &li, &vs, 2, &vc, out->views)) && vc == 2) {
+            double dt = updateHead(a, fs, out->views, focused);
+            auto tf0 = std::chrono::steady_clock::now();
+            if (!a.engine->frame(dt)) LOGE("frame %llu: Lua error", static_cast<unsigned long long>(a.frames));
+            frameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf0).count();
+            for (int e = 0; e < 2; ++e)
+                if (const RenderTarget* src = a.engine->eyeOutput(e)) {
+                    out->srcFbo[e] = src->fbo;
+                    out->srcW[e] = src->width;
+                    out->srcH[e] = src->height;
+                }
+            out->render = true;
+            if (a.engine->exitRequested) ANativeActivity_finish(a.android->activity);
+        }
+    }
+    App* ap = &a;
+    gl::threaded::enqueue([ap, out] { submitFrame(*ap, *out); });
+    gl::threaded::endFrame(1);
+    if (!out->render) return;
+    Renderer& rr = a.engine->renderer();
+    if (frameMs > 25.0) LOGI("slow frame %llu: engine thread %.1f ms", static_cast<unsigned long long>(a.frames), frameMs);
+    a.statMs += frameMs;
+    a.statMax = std::max(a.statMax, frameMs);
+    ++a.frames;
+    if (++a.statFrames == 360) {
+        gl::threaded::Stats t = gl::threaded::stats();
+        double n = static_cast<double>(std::max<uint64_t>(1, t.frames - a.statThread.frames));
+        LOGI("perf: engine thread avg %.2f ms max %.2f ms; render thread %.2f ms/frame, engine waited %.2f ms/frame, "
+             "%llu sync calls; textures read %.0f decode %.0f upload %.0f ms (%zu loads), resident %.0f MB",
+             a.statMs / a.statFrames, a.statMax, (t.replayMs - a.statThread.replayMs) / n,
+             (t.waitMs - a.statThread.waitMs) / n, static_cast<unsigned long long>(t.syncCalls - a.statThread.syncCalls),
+             rr.texReadMs, rr.texDecodeMs, rr.texUploadMs, rr.texLoads, static_cast<double>(rr.textureBytes()) / 1048576.0);
+        a.statThread = t;
+        a.statMs = a.statMax = 0;
+        a.statFrames = 0;
+        rr.texReadMs = rr.texDecodeMs = rr.texUploadMs = 0;
+        rr.texLoads = 0;
+    }
+}
+
 void frame(App& a) {
+    if (gl::threaded::active()) return frameThreaded(a);
     XrFrameState fs{XR_TYPE_FRAME_STATE};
     XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
     if (!xrOk("xrWaitFrame", xrWaitFrame(a.session, &wi, &fs))) return;
@@ -510,6 +675,7 @@ void frame(App& a) {
         if (done) {
             a.warmup = false;
             LOGI("shaders ready");
+            startRenderThread(a);
             bootStory(a);
         }
         return;
@@ -726,6 +892,7 @@ void android_main(android_app* app) {
         AAudioStream_close(a.audio);
     }
     a.engine.reset();
+    gl::threaded::stop();  // replays the engine's GL deletes, releases the context
     if (a.session != XR_NULL_HANDLE) xrDestroySession(a.session);
     if (a.instance != XR_NULL_HANDLE) xrDestroyInstance(a.instance);
 }

@@ -37,10 +37,12 @@ include(cmake/vorbis.cmake)
 
 add_library(oyster_render STATIC
   src/render/gl.cpp
+  src/render/gl_thread.cpp
   src/render/renderer.cpp
   src/render/render_graph.cpp
 )
-target_link_libraries(oyster_render PUBLIC oyster_core)
+find_package(Threads REQUIRED)
+target_link_libraries(oyster_render PUBLIC oyster_core Threads::Threads)
 
 # Story engine: the original Lua scripts drive the scene (native API layer, docs/native-api.md)
 add_library(oyster_story STATIC
@@ -55,7 +57,6 @@ add_library(oyster_story STATIC
   src/story/bind_audio.cpp
   src/audio/audio_engine.cpp
 )
-find_package(Threads REQUIRED)
 target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile Threads::Threads)
 
 # Android: headless engine self test, run from adb shell (no app window / OpenXR needed)
