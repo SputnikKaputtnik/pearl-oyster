@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 #include "render/render_graph.h"
+#include "core/reader.h"
 #include "render/renderer.h"
 
 namespace oyster::story {
@@ -13,15 +15,89 @@ namespace oyster::story {
 // ---------------------------------------------------------------------------------------------
 // SGNode
 
-Mat4 SGNode::worldMatrix() const {
-    Mat4 l = localMatrix();
+SRT srtCombine(const SRT& c, const SRT& par) {
+    SRT o;
+    o.s = Vec3(c.s.x * par.s.x, c.s.y * par.s.y, c.s.z * par.s.z);
+    // FUN_180020570: parent * child, then normalised
+    const Quat& a = par.r;
+    const Quat& b = c.r;
+    Quat q;
+    q.w = ((b.w * a.w - a.x * b.x) - b.y * a.y) - b.z * a.z;
+    q.x = (b.w * a.x + b.x * a.w + b.z * a.y) - b.y * a.z;
+    q.y = (b.y * a.w - b.z * a.x) + a.y * b.w + a.z * b.x;
+    q.z = ((b.z * a.w + b.y * a.x) - a.y * b.x) + a.z * b.w;
+    float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (0.0f < len) {
+        float inv = 1.0f / len;
+        q.x = inv * q.x; q.y = inv * q.y; q.z = inv * q.z; q.w = inv * q.w;
+    }
+    o.r = q;
+    // position: parent.p + parent.r * (parent.s * child.p)
+    const float qx = par.r.x, qy = par.r.y, qz = par.r.z, ww = par.r.w + par.r.w;
+    const float vx = c.p.x * par.s.x, vy = c.p.y * par.s.y, vz = c.p.z * par.s.z;
+    const float ax = vz * qy - vy * qz, ay = vx * qz - vz * qx, az = vy * qx - vx * qy;  // v x q
+    const float bx = ax * qz - az * qx, by = az * qy - ay * qz, bz = ay * qx - ax * qy;
+    o.p.x = vx + ax * ww + by + by + par.p.x;
+    o.p.y = ay * ww + vy + bx + bx + par.p.y;
+    o.p.z = az * ww + vz + bz + bz + par.p.z;
+    return o;
+}
+
+SRT srtFromMatrix(const Mat4& m) {
+    SRT o;
+    float c0[3] = {m.m[0], m.m[4], m.m[8]}, c1[3] = {m.m[1], m.m[5], m.m[9]}, c2[3] = {m.m[2], m.m[6], m.m[10]};
+    auto norm = [](float* c, float& len) {
+        len = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+        if (len == 0.0f) { len = 0.0f; return; }
+        if (0.0f < len) {
+            float inv = 1.0f / len;
+            for (int i = 0; i < 3; ++i) c[i] *= inv;
+        }
+    };
+    norm(c0, o.s.x);
+    norm(c1, o.s.y);
+    norm(c2, o.s.z);
+    if (0.0f < o.s.x) {
+        float det = (m.m[8] * m.m[1] - m.m[0] * m.m[9]) * m.m[6] + (m.m[4] * m.m[9] - m.m[8] * m.m[5]) * m.m[2] +
+                    (m.m[0] * m.m[5] - m.m[4] * m.m[1]) * m.m[10];
+        if (det < 0.0f) {  // negative determinant: flip the first axis
+            for (int i = 0; i < 3; ++i) c0[i] = -c0[i];
+            o.s.x = -o.s.x;
+        }
+    }
+    float r[3][3] = {{c0[0], c1[0], c2[0]}, {c0[1], c1[1], c2[1]}, {c0[2], c1[2], c2[2]}};
+    // Quaternion::setMatrix (trace method)
+    float tr = r[0][0] + r[1][1] + r[2][2];
+    Quat q;
+    if (tr > 0) {
+        float s = std::sqrt(tr + 1.0f) * 2.0f;
+        q = {(r[2][1] - r[1][2]) / s, (r[0][2] - r[2][0]) / s, (r[1][0] - r[0][1]) / s, 0.25f * s};
+    } else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
+        float s = std::sqrt(1.0f + r[0][0] - r[1][1] - r[2][2]) * 2.0f;
+        q = {0.25f * s, (r[0][1] + r[1][0]) / s, (r[0][2] + r[2][0]) / s, (r[2][1] - r[1][2]) / s};
+    } else if (r[1][1] > r[2][2]) {
+        float s = std::sqrt(1.0f + r[1][1] - r[0][0] - r[2][2]) * 2.0f;
+        q = {(r[0][1] + r[1][0]) / s, 0.25f * s, (r[1][2] + r[2][1]) / s, (r[0][2] - r[2][0]) / s};
+    } else {
+        float s = std::sqrt(1.0f + r[2][2] - r[0][0] - r[1][1]) * 2.0f;
+        q = {(r[0][2] + r[2][0]) / s, (r[1][2] + r[2][1]) / s, 0.25f * s, (r[1][0] - r[0][1]) / s};
+    }
+    o.r = q;
+    o.p = m.translation();
+    return o;
+}
+
+SRT SGNode::worldSRT() const {
+    SRT l = localSRT();
     if (!parent) return l;
     if (parentBone >= 0 && parent->kind == Kind::Actor) {
         const auto* a = static_cast<const ActorNode*>(parent);
-        if (a->inst && static_cast<size_t>(parentBone) < a->inst->nodeCount())
-            return a->inst->nodeWorld(static_cast<size_t>(parentBone)) * l;
+        if (a->inst && static_cast<size_t>(parentBone) < a->inst->nodeCount()) {
+            SRT proxy = srtCombine(srtFromMatrix(a->inst->nodeModel(static_cast<size_t>(parentBone))), a->worldSRT());
+            return srtCombine(l, proxy);
+        }
     }
-    return parent->worldMatrix() * l;
+    return srtCombine(l, parent->worldSRT());
 }
 
 bool SGNode::effectiveVisible() const {
@@ -273,6 +349,27 @@ void Engine::updateActor(ActorNode* a, float dt) {
     }
 }
 
+// SGLightAnimator: a light attached to an actor bone takes the bone track's custom attributes
+// "wrap" (+0x14c), "range" (+0x150, 2), "angle" (+0x158, 2) and "color" (+0x160, rgba) from the
+// actor's animation every frame.
+void Engine::applyAttachedLights(ActorNode* a) {
+    static const uint32_t kColor = fnv1a("color"), kRange = fnv1a("range"), kAngle = fnv1a("angle"),
+                          kWrap = fnv1a("wrap");
+    for (SGNode* c : a->children) {
+        if (c->kind != SGNode::Kind::Light || c->parentBone < 0 || !c->alive) continue;
+        auto* l = static_cast<LightNode*>(c);
+        float v[4];
+        uint32_t mask = 0;
+        if (a->inst->nodeCustom(c->parentBone, kColor, v, &mask))
+            for (int i = 0; i < 3; ++i) if (mask & (1u << i)) l->color[i] = v[i];
+        if (a->inst->nodeCustom(c->parentBone, kRange, v, &mask))
+            for (int i = 0; i < 2; ++i) if (mask & (1u << i)) l->range[i] = v[i];
+        if (a->inst->nodeCustom(c->parentBone, kAngle, v, &mask))
+            for (int i = 0; i < 2; ++i) if (mask & (1u << i)) l->spot[i] = v[i];
+        if (a->inst->nodeCustom(c->parentBone, kWrap, v, &mask) && (mask & 1u)) l->wrap = v[0];
+    }
+}
+
 void Engine::callNodeHook(lua_State* L, SGNode* n, const char* hook) {
     // LComponent::onUpdate: Transform.<hook>(object), on the calling Lua thread
     lua_getglobal(L, "Transform");
@@ -297,7 +394,10 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onUpdate");
     for (SGNode* n : nodes)
         if (n->alive && (n->kind == SGNode::Kind::Actor || n->kind == SGNode::Kind::RenderGraphInstance))
+        {
             updateActor(static_cast<ActorNode*>(n), dt);
+            if (static_cast<ActorNode*>(n)->inst) applyAttachedLights(static_cast<ActorNode*>(n));
+        }
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onLateUpdate");
     // deferred deletes
@@ -412,6 +512,13 @@ void Engine::draw() {
         li.spot[1] = l->spot[1];
         li.viewFlags = l->viewFlags;
         vp.lights.push_back(li);
+        static const bool debugLights = std::getenv("OYSTER_DEBUG_LIGHTS") != nullptr;
+        if (debugLights) {
+            Vec3 dir = li.world.transformDir({0, 0, 1});
+            std::fprintf(stderr, "frame %llu light %s type %d color %.3f %.3f %.3f wrap %.3f flags %x dir %.3f %.3f %.3f bone %d\n",
+                         static_cast<unsigned long long>(frameIndex), l->name.c_str(), l->type, l->color[0], l->color[1],
+                         l->color[2], l->wrap, l->viewFlags, dir.x, dir.y, dir.z, l->parentBone);
+        }
     }
     renderer_->resetStats();
     graph.execute(*renderer_, items, vp, graphAnim);

@@ -237,6 +237,11 @@ Renderer::GpuMesh& Renderer::gpuMesh(const ModelInstance& inst, size_t mi) {
     upload(1, v.normal, 3);
     upload(2, v.tangent, 3);
     for (int k = 0; k < 4; ++k) upload(3 + static_cast<GLuint>(k), v.uv[k], 2);
+    // [I] Observed: where a mesh has no second UV set, the original feeds uv0 to a_texcoord1
+    // (Pearl's warp-pass shaders read a_texcoord1). Verified against the reference frame that shows
+    // the warp pass directly (mean difference 4.87 -> 1.15); the engine's own code would disable
+    // the attribute, so the mechanism is on the driver side (NVIDIA compatibility context).
+    if (v.uv[1].empty() && !v.uv[0].empty()) upload(4, v.uv[0], 2);
     upload(7, v.color, 4);
     upload(8, v.weights, 4);
     upload(9, v.joints, 4);

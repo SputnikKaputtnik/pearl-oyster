@@ -47,6 +47,7 @@ ModelInstance::ModelInstance(std::shared_ptr<const ModelResource> geometry, std:
     id_ = nextId++;
     size_t n = geom_->localXforms.size();
     local_ = geom_->localXforms;
+    model_.resize(n);
     world_.resize(n);
     nodeVisible_.assign(n, 1);
     ownVisible_.assign(n, 1);
@@ -105,6 +106,14 @@ bool ModelInstance::materialOverride(uint32_t mh, uint32_t ph, uint32_t pass, fl
     return true;
 }
 
+bool ModelInstance::nodeCustom(int node, uint32_t attrHash, float out[4], uint32_t* mask) const {
+    auto it = nodeCustom_.find({node, attrHash});
+    if (it == nodeCustom_.end()) return false;
+    for (int i = 0; i < 4; ++i) out[i] = it->second.v[i];
+    *mask = it->second.mask;
+    return true;
+}
+
 void ModelInstance::evaluate(const SamplingPolicy& policy) {
     if (anim_) {
         const AnimResource& a = *anim_->res;
@@ -149,13 +158,20 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
                 uint32_t comp = (graph ? ch.customVals[2] : ch.customVals[3]) & 3;
                 pv.v[comp] = v;
                 pv.mask |= 1u << comp;
+                if (graph && trackNode_[t] >= 0) {
+                    ParamValue& nv = nodeCustom_[{trackNode_[t], ch.customVals[0]}];
+                    nv.v[comp] = v;
+                    nv.mask |= 1u << comp;
+                }
             }
         }
     }
     const auto& parents = geom_->parents;
     for (size_t i = 0; i < local_.size(); ++i) {
         int p = i < parents.size() ? parents[i] : -1;
-        world_[i] = (p >= 0 ? world_[static_cast<size_t>(p)] : root) * local_[i];
+        // model-space matrices as the engine keeps them; drawing uses actor world * model
+        model_[i] = p >= 0 ? model_[static_cast<size_t>(p)] * local_[i] : local_[i];
+        world_[i] = root * model_[i];
         bool v = ownVisible_[i] && nodeVisible_[i] && (p < 0 || effVisible_[static_cast<size_t>(p)]);
         effVisible_[i] = v ? 1 : 0;
     }

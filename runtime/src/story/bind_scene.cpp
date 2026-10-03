@@ -43,58 +43,6 @@ void srtArg(lua_State* L, int idx, Vec3& p, Quat& r, Vec3& s) {
     lua_pop(L, 1);
 }
 
-Quat quatFromMatrix(const float r[3][3]) {
-    Quat q;
-    float tr = r[0][0] + r[1][1] + r[2][2];
-    if (tr > 0) {
-        float s = std::sqrt(tr + 1.0f) * 2.0f;
-        q.w = 0.25f * s;
-        q.x = (r[2][1] - r[1][2]) / s;
-        q.y = (r[0][2] - r[2][0]) / s;
-        q.z = (r[1][0] - r[0][1]) / s;
-    } else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
-        float s = std::sqrt(1.0f + r[0][0] - r[1][1] - r[2][2]) * 2.0f;
-        q.w = (r[2][1] - r[1][2]) / s;
-        q.x = 0.25f * s;
-        q.y = (r[0][1] + r[1][0]) / s;
-        q.z = (r[0][2] + r[2][0]) / s;
-    } else if (r[1][1] > r[2][2]) {
-        float s = std::sqrt(1.0f + r[1][1] - r[0][0] - r[2][2]) * 2.0f;
-        q.w = (r[0][2] - r[2][0]) / s;
-        q.x = (r[0][1] + r[1][0]) / s;
-        q.y = 0.25f * s;
-        q.z = (r[1][2] + r[2][1]) / s;
-    } else {
-        float s = std::sqrt(1.0f + r[2][2] - r[0][0] - r[1][1]) * 2.0f;
-        q.w = (r[1][0] - r[0][1]) / s;
-        q.x = (r[0][2] + r[2][0]) / s;
-        q.y = (r[1][2] + r[2][1]) / s;
-        q.z = 0.25f * s;
-    }
-    return q;
-}
-
-// Transform::setMatrix: translation, column lengths as scale, normalised rotation
-void decompose(const Mat4& m, Vec3& t, Quat& q, Vec3& s) {
-    t = m.translation();
-    Vec3 c[3];
-    for (int i = 0; i < 3; ++i) c[i] = Vec3(m.at(0, i), m.at(1, i), m.at(2, i));
-    s = {c[0].length(), c[1].length(), c[2].length()};
-    float r[3][3];
-    for (int col = 0; col < 3; ++col) {
-        float l = (&s.x)[col];
-        for (int row = 0; row < 3; ++row) r[row][col] = l > 0 ? m.at(row, col) / l : 0;
-    }
-    q = quatFromMatrix(r);
-}
-
-void pushMatrixSRT(lua_State* L, const Mat4& m) {
-    Vec3 t, s;
-    Quat q;
-    decompose(m, t, q, s);
-    LuaHost::from(L).pushSRT(L, t, q, s);
-}
-
 SGNode* nodeArg(lua_State* L, int idx) {
     SGNode* n = objectArg<SGNode>(L, idx);
     return n && n->alive ? n : nullptr;
@@ -241,15 +189,18 @@ int Tr_setWorld(lua_State* L) {
         n->rotation = r;
         n->scale = s;
     } else {
-        Mat4 local = n->parent->worldMatrix().inverse() * Mat4::trs(p, r, s);
-        decompose(local, n->position, n->rotation, n->scale);
+        SRT l = srtFromMatrix(n->parent->worldMatrix().inverse() * Mat4::trs(p, r, s));
+        n->position = l.p;
+        n->rotation = l.r;
+        n->scale = l.s;
     }
     return 0;
 }
 int Tr_getWorld(lua_State* L) {
     SGNode* n = nodeArg(L, 1);
     if (!n) return 0;
-    pushMatrixSRT(L, n->worldMatrix());
+    SRT w = n->worldSRT();
+    LuaHost::from(L).pushSRT(L, w.p, w.r, w.s);
     return 1;
 }
 int Tr_addComponent(lua_State* L) {
@@ -364,21 +315,24 @@ int Actor_getBoneWorld(lua_State* L) {
     ActorNode* a = actorArg(L, 1);
     int i = static_cast<int>(optNumber(L, 2, -1));
     if (!boneOk(a, i)) return 0;
-    pushMatrixSRT(L, a->worldMatrix() * (a->inst->root.inverse() * a->inst->nodeWorld(static_cast<size_t>(i))));
+    SRT w = srtCombine(srtFromMatrix(a->inst->nodeModel(static_cast<size_t>(i))), a->worldSRT());
+    LuaHost::from(L).pushSRT(L, w.p, w.r, w.s);
     return 1;
 }
 int Actor_getBoneModel(lua_State* L) {
     ActorNode* a = actorArg(L, 1);
     int i = static_cast<int>(optNumber(L, 2, -1));
     if (!boneOk(a, i)) return 0;
-    pushMatrixSRT(L, a->inst->root.inverse() * a->inst->nodeWorld(static_cast<size_t>(i)));
+    SRT m = srtFromMatrix(a->inst->nodeModel(static_cast<size_t>(i)));
+    LuaHost::from(L).pushSRT(L, m.p, m.r, m.s);
     return 1;
 }
 int Actor_getBoneLocal(lua_State* L) {
     ActorNode* a = actorArg(L, 1);
     int i = static_cast<int>(optNumber(L, 2, -1));
     if (!boneOk(a, i)) return 0;
-    pushMatrixSRT(L, a->inst->nodeLocal(static_cast<size_t>(i)));
+    SRT l = srtFromMatrix(a->inst->nodeLocal(static_cast<size_t>(i)));
+    LuaHost::from(L).pushSRT(L, l.p, l.r, l.s);
     return 1;
 }
 int Actor_setBoneVisibility(lua_State* L) {
@@ -692,7 +646,7 @@ int Trig_withParent(lua_State* L) {
     ActorNode* a = actorArg(L, 1);
     Mat4 m = srtMatrixArg(L, 2);
     int bone = static_cast<int>(optNumber(L, 5, -1));
-    if (boneOk(a, bone)) m = a->inst->root.inverse() * a->inst->nodeWorld(static_cast<size_t>(bone));
+    if (boneOk(a, bone)) m = srtFromMatrix(a->inst->nodeModel(static_cast<size_t>(bone))).matrix();
     bool hit = lookAtHit(m, vec3Arg(L, 3), static_cast<float>(optNumber(L, 4, 0)), vec3Arg(L, 6), vec3Arg(L, 7));
     lua_pushboolean(L, hit);
     return 1;

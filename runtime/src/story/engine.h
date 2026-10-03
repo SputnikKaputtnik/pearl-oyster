@@ -30,9 +30,19 @@ namespace oyster::story {
 class Engine;
 struct AnimationObj;
 
+// Transform (scale, rotation, position) and the engine's composition rules.
+struct SRT {
+    Vec3 s{1, 1, 1};
+    Quat r;
+    Vec3 p{0, 0, 0};
+    Mat4 matrix() const { return Mat4::trs(p, r, s); }  // Transform::getMatrix
+};
+SRT srtCombine(const SRT& child, const SRT& parent);  // FUN_180088e70 (SGTransform world update)
+SRT srtFromMatrix(const Mat4& m);                     // Transform::setMatrix
+
 // Scene graph node (SGTransform). Local transform as SRT; world composed through the parent
-// chain (SGTransform::updateTransformIfDirty) - attachments go through a bone of an actor
-// (SGAttachmentProxy: actor world * bone model matrix).
+// chain with srtCombine (SGTransform::updateTransformIfDirty) - attachments go through a bone of
+// an actor (SGAttachmentProxy: local = bone model matrix as SRT, parent = the actor).
 struct SGNode : NativeObject {
     enum class Kind { Transform, Actor, Camera, Light, RenderGraphInstance, Atmospherics, Particles, Other };
     Kind kind = Kind::Transform;
@@ -49,8 +59,10 @@ struct SGNode : NativeObject {
     bool alive = true;
     uint64_t order = 0;  // creation order (scene traversal order)
 
+    SRT localSRT() const { return {scale, rotation, position}; }
     Mat4 localMatrix() const { return Mat4::trs(position, rotation, scale); }
-    Mat4 worldMatrix() const;
+    SRT worldSRT() const;
+    Mat4 worldMatrix() const { return worldSRT().matrix(); }
     bool effectiveVisible() const;  // own visibility and active flag, inherited from parents
 };
 
@@ -172,6 +184,7 @@ private:
     void bindAll();
     void callNodeHook(lua_State* L, SGNode* n, const char* hook);
     void updateActor(ActorNode* a, float dt);
+    void applyAttachedLights(ActorNode* a);
 
     const PackageFS& fs_;
     EngineOptions opt_;

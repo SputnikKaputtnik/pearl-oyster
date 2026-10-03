@@ -49,18 +49,36 @@ Run it with a scratch directory as working directory: the story tries to write c
   `Material::getParameter`, i.e. the **first pass** that has the parameter; values persist across
   clips. Render-graph channels `[paramHash, type, component]` go to the image node materials.
 * **Render view clear colour**: packed to RGBA8 (`FUN_1800e9ee0`), unpacked in RenderView::clear.
+* **World transforms** compose as SRT (FUN_180088e70: component-wise scale, parent*child
+  quaternion, position = parent.p + parent.r*(parent.s*child.p)); bone matrices enter via
+  Transform::setMatrix. Drawing uses actor world * model-space bone matrix.
+* **Attached lights** (SGLightAnimator): the bone track's custom channels "color", "range",
+  "angle", "wrap" drive the light (Pearl animates the light colour per shot).
+* **Look-at triggers** (FUN_180102db0/-b70): ray/sphere test; the bone variant uses the bone's
+  model matrix without the actor world, as the original does.
+* **Mesh instances** are baked at load time (ModelResource::fixupMeshInstances).
+* **Determinism / table order**: LuaJIT 2.1 is built with a patched string id (= LuaJIT 2.0
+  content hash, seed 0) and without the security randomisation, so pairs() iterates like the
+  original's LuaJIT 2.0.4 and two runs are bit-identical.
+* **[I] a_texcoord1 fallback**: meshes without a second UV set feed uv0 to `a_texcoord1` (warp
+  pass). The engine code would disable the attribute; the observed original output (frame that
+  shows the warp pass directly: 4.87 -> 1.15) requires uv0 - mechanism on the driver side.
 
 ## Validation (fixed step 33.3333 ms, against run07a playblast)
 
 * The state sequence and every transition frame match the original's record markers (run06,
   constant offset: the original spends ~10 frames loading before the story starts); player frame
   `f` corresponds to reference `screenshot_{f+9}`.
-* Mean absolute difference per frame (0..255), first 1300 frames (start → S01_10_animB):
-  desert start 4.3-4.9, fade/title sequence 0.00-0.05 (bit-near exact), seq1_shot05B fade-in
-  0.8-2.8, S01_10_anim/animB 3.84-3.92, end of animB 4.0-4.3. The ~3.9 floor is the film grain
-  (per-frame noise phase, accepted as invisible).
+* Mean absolute difference per frame (0..255), every 50th frame of all 2366 reference frames
+  (start → seq1_shot60): mean 3.82, on 4x downsampled images 1.54 (film grain averages out).
+  Title sequence 0.00-0.05; most shots 3.6-4.5 (grain floor); seq1_shot20 ~7 (2.7 downsampled:
+  rim highlights slightly weaker, open).
+* All 31 state transitions recorded by the original (run06 markers, up to seq4_shot10_Part2)
+  match frame-exactly; the whole film runs to EndingCreditTemp (~6 min story time, ~1 min
+  compute headless).
 * Fixed on the way: animated material values were matched to pass index = type field (2) - single
-  pass materials (title back plate) never got them, and the light/bloom band in animB was weaker.
+  pass materials (title back plate) never got them, and the light/bloom band in animB was weaker;
+  GPU mesh cache keyed by address (reused memory gave new actors old geometry).
 
 ## Open
 

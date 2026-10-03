@@ -44,7 +44,8 @@ public:
     // Evaluate pose, world matrices, material parameter animation and vertex animation.
     void evaluate(const SamplingPolicy& policy);
 
-    const Mat4& nodeWorld(size_t i) const { return world_[i]; }
+    const Mat4& nodeWorld(size_t i) const { return world_[i]; }  // root * nodeModel(i)
+    const Mat4& nodeModel(size_t i) const { return model_[i]; }  // model space (updateModelMatrices)
     const Mat4& nodeLocal(size_t i) const { return local_[i]; }
     // Effective visibility (updateModelMatrices): own flag (Actor.setBoneVisibility) && animated
     // flag && effective visibility of the parent.
@@ -58,6 +59,9 @@ public:
     // binds channels per material, all passes see the value); mask = components set.
     // Render-graph parameters (customA == 1) are stored under (0, param, 0).
     bool materialOverride(uint32_t materialHash, uint32_t paramHash, uint32_t pass, float out[4], uint32_t* mask) const;
+    // Last sampled value of a custom attribute channel (customA == 1) on the track of `node`
+    // (SGAnimator::sampleCustomAnimations; e.g. "color"/"range"/"angle"/"wrap" of attached lights).
+    bool nodeCustom(int node, uint32_t attrHash, float out[4], uint32_t* mask) const;
 
 private:
     void bindAnimation();
@@ -67,7 +71,7 @@ private:
     uint64_t id_ = 0;
     std::shared_ptr<const ModelResource> geom_;
     std::vector<Material> materials_;
-    std::vector<Mat4> local_, world_;
+    std::vector<Mat4> local_, model_, world_;
     std::vector<uint8_t> nodeVisible_;  // animated (pose) visibility
     std::vector<uint8_t> ownVisible_, effVisible_;
     std::vector<MeshState> meshes_;
@@ -84,6 +88,7 @@ private:
     std::vector<VanmBinding> vanm_;
     struct ParamValue { float v[4] = {0, 0, 0, 0}; uint32_t mask = 0; };
     std::map<std::tuple<uint32_t, uint32_t, uint32_t>, ParamValue> params_;
+    std::map<std::pair<int, uint32_t>, ParamValue> nodeCustom_;
 };
 
 // Applies baked subdivision stencils + remap to cage data (pos & normal, 3 floats each).
