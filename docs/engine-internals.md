@@ -19,7 +19,11 @@ Source: Ghidra 12.1.3 project of `moxie.v2.shared.windows.dll` (Steam build 1340
 
 ## Character animation playback (`VertexAnimator::update` @ 0x1800a7e10)
 
-* Frame position `f = elapsed × rate + start`, clamped to the last frame;
+* Frame position `f = elapsed × fps + start`, clamped to the last frame; `fps` is the **integer
+  from the .mxa header** (`AnimResource+0x2c`, 30), set in `Animator::addAnimation`; clip
+  duration = `(end − start + 1) / fps`. The float fps inside the VANM block (sometimes
+  29.999998) is not used for playback → no drift from it **[F]**.
+* (formula detail:)
   `f0 = floor(f)`, `f1 = f0 + 1` (wraps to 0 for looping clips), `t = f − f0` **[F]**.
 * Per animated mesh a flag (VMesh field `u32` = 3 or 1, bit 1) selects the mode **[F]**:
   * **bit set (value 3, 3203 of 3473 meshes): stepped** — frame `f0` is copied, no
