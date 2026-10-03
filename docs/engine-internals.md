@@ -87,5 +87,6 @@ For cages with attribute flags 3 (position + normal) the per-frame evaluation is
   `u32[nIdx]` array and `w` from the `f32[nIdx]` array of the topology block. No recursive
   refinement at runtime — the refinement was precomputed into linear stencils.
 * `FUN_1801b7160` then gathers the outputs into render-vertex order using the first index array
-  of the last block (`n0 × u32[n1]`). Other attribute sets use `FUN_1801b69d0` (not yet read).
+  of the last block (`n0 × u32[n1]`). Other attribute sets would use `FUN_1801b69d0`, but all
+  516 subdivision meshes in Pearl have attribute flags 0x3, so that path is unused **[F]**.
 This makes the character pipeline: decode VANM cage frame → apply stencils → remap → render.
