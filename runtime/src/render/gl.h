@@ -40,6 +40,8 @@ typedef std::ptrdiff_t GLintptr;
 #define GL_RGBA8 0x8058
 #define GL_DEPTH24_STENCIL8 0x88F0
 #define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#define GL_DEPTH_ATTACHMENT 0x8D00
+#define GL_STENCIL_ATTACHMENT 0x8D20
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_READ_FRAMEBUFFER 0x8CA8
@@ -176,5 +178,14 @@ OYSTER_GL_FUNCS(OYSTER_GL_DECLARE)
 
 // Resolves all functions; returns the name of the first missing one or nullptr on success.
 const char* load(void* (*getProc)(const char*));
+
+// Optional (nullptr when unavailable): GLES 3.0 invalidation and the tile-GPU MSAA extension
+// EXT_multisampled_render_to_texture (multisampling in tile memory, implicit resolve on store).
+using PFN_glInvalidateFramebuffer = void (*)(GLenum, GLsizei, const GLenum*);
+using PFN_glFramebufferTexture2DMultisampleEXT = void (*)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+using PFN_glRenderbufferStorageMultisampleEXT = void (*)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+extern PFN_glInvalidateFramebuffer glInvalidateFramebuffer;
+extern PFN_glFramebufferTexture2DMultisampleEXT glFramebufferTexture2DMultisampleEXT;
+extern PFN_glRenderbufferStorageMultisampleEXT glRenderbufferStorageMultisampleEXT;
 bool hasExtension(const char* name);
 }  // namespace oyster::gl

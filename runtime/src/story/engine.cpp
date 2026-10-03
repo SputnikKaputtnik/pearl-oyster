@@ -201,7 +201,10 @@ PhaseTimer gPhases[] = {{"lua update (excl. scene)"}, {"actors"}, {"particles+ho
 double nowMs() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-const bool kTiming = std::getenv("OYSTER_DEBUG_TIMING") != nullptr;
+bool timingOn() {
+    static const bool on = std::getenv("OYSTER_DEBUG_TIMING") != nullptr;  // read on first use
+    return on;
+}
 }  // namespace
 
 bool Engine::frame(double dtSeconds) {
@@ -211,13 +214,13 @@ bool Engine::frame(double dtSeconds) {
     dt = static_cast<int64_t>(static_cast<double>(dt) * time_.scale);
     time_.dtUs = dt;
     time_.elapsedUs += dt;
-    double t0 = kTiming ? nowMs() : 0;
-    double sceneBefore = kTiming ? gPhases[1].total + gPhases[2].total : 0;
+    double t0 = timingOn() ? nowMs() : 0;
+    double sceneBefore = timingOn() ? gPhases[1].total + gPhases[2].total : 0;
     bool ok = lua_->callApplication("onUpdate");
-    if (kTiming) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
+    if (timingOn()) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
     ok = lua_->callApplication("onRender") && ok;
     ++frameIndex;
-    if (kTiming && frameIndex % 300 == 0) {
+    if (timingOn() && frameIndex % 300 == 0) {
         std::string line = "timing/frame:";
         for (auto& ph : gPhases) {
             char b[96];
@@ -462,15 +465,15 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
     std::vector<SGNode*> nodes = scene->nodes;
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onUpdate");
-    double ta = kTiming ? nowMs() : 0;
+    double ta = timingOn() ? nowMs() : 0;
     for (SGNode* n : nodes)
         if (n->alive && (n->kind == SGNode::Kind::Actor || n->kind == SGNode::Kind::RenderGraphInstance))
         {
             updateActor(static_cast<ActorNode*>(n), dt);
             if (static_cast<ActorNode*>(n)->inst) applyAttachedLights(static_cast<ActorNode*>(n));
         }
-    double tb = kTiming ? nowMs() : 0;
-    if (kTiming) gPhases[1].total += tb - ta;
+    double tb = timingOn() ? nowMs() : 0;
+    if (timingOn()) gPhases[1].total += tb - ta;
     // SGParticleEmitter::internalUpdate: global dt (us) x 1e-6 x the emitter's time scale, after
     // the actors have posed the bones the emitters hang on
     for (SGNode* n : nodes) {
@@ -486,7 +489,7 @@ void Engine::sceneUpdate(lua_State* L, SceneObj* scene) {
     }
     for (SGNode* n : nodes)
         if (n->alive && n->luaComponents && n->active) callNodeHook(L, n, "__onLateUpdate");
-    if (kTiming) gPhases[2].total += nowMs() - tb;
+    if (timingOn()) gPhases[2].total += nowMs() - tb;
     // deferred deletes
     std::vector<SGNode*> dead;
     dead.swap(pendingDelete_);
@@ -554,7 +557,7 @@ const RenderTarget* Engine::eyeOutput(int eye) const {
 
 void Engine::draw() {
     if (!activeGraph_ || !activeGraph_->graph) return;
-    double td0 = kTiming ? nowMs() : 0;
+    double td0 = timingOn() ? nowMs() : 0;
     for (auto* g : graphs)
         if (g != activeGraph_) {
             if (g->graph) g->graph->release();
@@ -644,12 +647,12 @@ void Engine::draw() {
                          l->color[2], l->wrap, l->viewFlags, dir.x, dir.y, dir.z, l->parentBone);
         }
     }
-    double td1 = kTiming ? nowMs() : 0;
-    if (kTiming) gPhases[3].total += td1 - td0;
+    double td1 = timingOn() ? nowMs() : 0;
+    if (timingOn()) gPhases[3].total += td1 - td0;
     struct GraphTimer {
         double t0;
         ~GraphTimer() {
-            if (kTiming) gPhases[4].total += nowMs() - t0;
+            if (timingOn()) gPhases[4].total += nowMs() - t0;
         }
     } graphTimer{td1};
     renderer_->beginFrame();

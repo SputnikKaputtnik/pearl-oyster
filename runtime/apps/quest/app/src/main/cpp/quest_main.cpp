@@ -18,9 +18,11 @@
 #include <openxr/openxr_platform.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -123,7 +125,19 @@ struct App {
     AAudioStream* audio = nullptr;
     bool audioPlaying = false;
     uint64_t frames = 0;
+    double statMs = 0, statMax = 0;
+    int statFrames = 0;
 };
+
+// Pearl data: shared storage /sdcard/Oyster/pearl (adb-pushed, needs "all files access"), else
+// the app's own external files directory
+constexpr char kSharedRoot[] = "/sdcard/Oyster";
+std::string dataRoot(const std::string& files) {
+    std::string shared = std::string(kSharedRoot) + "/pearl";
+    std::error_code ec;
+    if (std::filesystem::is_directory(shared, ec)) return shared;
+    return files + "/pearl";
+}
 
 aaudio_data_callback_result_t audioCallback(AAudioStream*, void* user, void* data, int32_t frames) {
     static_cast<audio::Engine*>(user)->render(static_cast<int16_t*>(data), static_cast<uint32_t>(frames));
@@ -238,6 +252,8 @@ bool initXr(App& a) {
     std::vector<const char*> enable = {XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME, XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
     bool localFloor = has("XR_EXT_local_floor");
     if (localFloor) enable.push_back("XR_EXT_local_floor");
+    bool perfSettings = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+    if (perfSettings) enable.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     ci.next = &ai;
     ci.enabledExtensionCount = static_cast<uint32_t>(enable.size());
@@ -272,12 +288,22 @@ bool initXr(App& a) {
     rs.poseInReferenceSpace.orientation.w = 1;
     if (!xrOk("xrCreateReferenceSpace", xrCreateReferenceSpace(a.session, &rs, &a.space))) return false;
     LOGI("reference space %s", localFloor ? "LOCAL_FLOOR" : "STAGE");
+    // The story renders the whole render graph twice per frame: ask for sustained high CPU and GPU
+    // clocks (the default level is chosen for light apps)
+    PFN_xrPerfSettingsSetPerformanceLevelEXT setLevel = nullptr;
+    if (perfSettings &&
+        XR_SUCCEEDED(xrGetInstanceProcAddr(a.instance, "xrPerfSettingsSetPerformanceLevelEXT",
+                                           reinterpret_cast<PFN_xrVoidFunction*>(&setLevel))) && setLevel) {
+        bool cpu = xrOk("perf level CPU", setLevel(a.session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));
+        bool gpu = xrOk("perf level GPU", setLevel(a.session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));
+        LOGI("performance level sustained high: CPU %d GPU %d", cpu, gpu);
+    }
     return createSwapchains(a);
 }
 
 void startEngine(App& a) {
     std::string files = a.android->activity->externalDataPath ? a.android->activity->externalDataPath : "";
-    std::string root = files + "/pearl";
+    std::string root = dataRoot(files);
     if (chdir(files.c_str()) != 0) LOGE("chdir %s failed", files.c_str());  // saves/ go next to the data
     try {
         a.fs = std::make_unique<PackageFS>(root);
@@ -381,7 +407,28 @@ void frame(App& a) {
             if (focused && a.lastDisplayTime != 0)
                 dt = std::min(0.1, std::max(0.0, static_cast<double>(fs.predictedDisplayTime - a.lastDisplayTime) * 1e-9));
             a.lastDisplayTime = focused ? fs.predictedDisplayTime : 0;
+            Renderer& rr = a.engine->renderer();
+            double texBefore = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs;
+            size_t loadsBefore = rr.texLoads;
+            auto tf0 = std::chrono::steady_clock::now();
             if (!a.engine->frame(dt)) LOGE("frame %llu: Lua error", static_cast<unsigned long long>(a.frames));
+            double frameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf0).count();
+            double texMs = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs - texBefore;
+            if (frameMs > 25.0)
+                LOGI("slow frame %llu: %.1f ms (%zu texture loads %.1f ms)", static_cast<unsigned long long>(a.frames),
+                     frameMs, rr.texLoads - loadsBefore, texMs);
+            a.statMs += frameMs;
+            a.statMax = std::max(a.statMax, frameMs);
+            if (++a.statFrames == 360) {
+                LOGI("perf: engine frame avg %.2f ms max %.2f ms; textures read %.0f decode %.0f upload %.0f ms (%zu loads), "
+                     "resident %.0f MB",
+                     a.statMs / a.statFrames, a.statMax, rr.texReadMs, rr.texDecodeMs, rr.texUploadMs, rr.texLoads,
+                     static_cast<double>(rr.textureBytes()) / 1048576.0);
+                a.statMs = a.statMax = 0;
+                a.statFrames = 0;
+                rr.texReadMs = rr.texDecodeMs = rr.texUploadMs = 0;
+                rr.texLoads = 0;
+            }
             ++a.frames;
             for (int e = 0; e < 2; ++e) {
                 Swapchain& s = a.swapchains[e];
@@ -418,6 +465,83 @@ void frame(App& a) {
     xrEndFrame(a.session, &ei);
 }
 
+// Self test without an OpenXR session (nobody needs to wear the headset): if the file
+// <files>/selftest exists (content: number of frames, default 3000), the story runs offscreen
+// with a seated, still head at the Quest 3's eye size and field of view, at a fixed 72 Hz step;
+// CPU+GPU time per frame (glFinish) and texture loading are logged, then the app exits. The
+// flag file is removed so the next launch is normal.
+bool selfTest(App& a) {
+    std::string files = a.android->activity->externalDataPath ? a.android->activity->externalDataPath : "";
+    std::string flag = std::string(kSharedRoot) + "/selftest";
+    FILE* f = std::fopen(flag.c_str(), "r");
+    if (!f) return false;
+    int frames = 3000;
+    if (std::fscanf(f, "%d", &frames) != 1 || frames <= 0) frames = 3000;
+    std::fclose(f);
+    std::remove(flag.c_str());
+    LOGI("self test: %d frames", frames);
+    if (!initEgl(a)) {
+        LOGE("self test: EGL failed");
+        return true;
+    }
+    if (chdir(files.c_str()) != 0) LOGE("chdir %s failed", files.c_str());
+    try {
+        PackageFS fs(dataRoot(files));
+        story::EngineOptions opt;
+        opt.width = 1680;
+        opt.height = 1760;
+        opt.msaa = 2;
+        story::Engine engine(fs, opt);
+        story::HmdState& h = engine.hmd();
+        h.active = true;
+        h.width = 1680;
+        h.height = 1760;
+        h.position = Vec3(0, 1.2f, 0);
+        h.eye[0] = {-1.13f, 0.84f, 0.90f, -1.13f};
+        h.eye[1] = {-0.84f, 1.13f, 0.90f, -1.13f};
+        engine.renderer().setTextureBudget(kTextureBudget);
+        engine.time().fixedStepMs = 1000.0 / 72.0;
+        auto tb = std::chrono::steady_clock::now();
+        if (!engine.boot()) throw std::runtime_error("story boot failed: " + engine.lua().lastError());
+        LOGI("self test: story booted in %.0f ms",
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tb).count());
+        Renderer& rr = engine.renderer();
+        double sum = 0, mx = 0, all = 0;
+        int n = 0, over = 0;
+        for (int i = 0; i < frames && !engine.exitRequested; ++i) {
+            size_t loads = rr.texLoads;
+            double tex = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs;
+            auto t0 = std::chrono::steady_clock::now();
+            engine.frame(0);
+            glFinish();
+            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (ms > 25.0)
+                LOGI("slow frame %d: %.1f ms (%zu texture loads %.1f ms)", i, ms, rr.texLoads - loads,
+                     rr.texReadMs + rr.texDecodeMs + rr.texUploadMs - tex);
+            sum += ms;
+            all += ms;
+            mx = std::max(mx, ms);
+            over += ms > 13.9 ? 1 : 0;
+            if (++n == 360) {
+                LOGI("self test frames %d-%d: avg %.2f ms max %.2f ms, %d over 13.9 ms; textures read %.0f decode %.0f "
+                     "upload %.0f ms (%zu loads), resident %.0f MB",
+                     i - 359, i, sum / n, mx, over, rr.texReadMs, rr.texDecodeMs, rr.texUploadMs, rr.texLoads,
+                     static_cast<double>(rr.textureBytes()) / 1048576.0);
+                sum = mx = 0;
+                n = over = 0;
+                rr.texReadMs = rr.texDecodeMs = rr.texUploadMs = 0;
+                rr.texLoads = 0;
+            }
+        }
+        LOGI("self test done: %llu frames, story time %.1f s, average %.2f ms per frame",
+             static_cast<unsigned long long>(engine.frameIndex), static_cast<double>(engine.time().elapsedUs) * 1e-6,
+             all / static_cast<double>(std::max<uint64_t>(1, engine.frameIndex)));
+    } catch (const std::exception& e) {
+        LOGE("self test failed: %s", e.what());
+    }
+    return true;
+}
+
 void onAppCmd(android_app* app, int32_t cmd) {
     App& a = *static_cast<App*>(app->userData);
     if (cmd == APP_CMD_RESUME) a.resumed = true;
@@ -431,10 +555,20 @@ void onAppCmd(android_app* app, int32_t cmd) {
 
 void android_main(android_app* app) {
     redirectStdio();
+    setenv("OYSTER_DEBUG_TIMING", "1", 1);  // engine CPU breakdown every 300 frames in the log
     App a;
     a.android = app;
     app->userData = &a;
     app->onAppCmd = onAppCmd;
+    if (selfTest(a)) {
+        app->onAppCmd = nullptr;  // no OpenXR session for the self test
+        ANativeActivity_finish(app->activity);
+        while (!app->destroyRequested) {
+            android_poll_source* src = nullptr;
+            if (ALooper_pollOnce(-1, nullptr, nullptr, reinterpret_cast<void**>(&src)) >= 0 && src) src->process(app, src);
+        }
+        return;
+    }
     while (!app->destroyRequested) {
         for (;;) {
             android_poll_source* src = nullptr;

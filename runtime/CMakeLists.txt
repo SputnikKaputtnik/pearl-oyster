@@ -56,6 +56,12 @@ add_library(oyster_story STATIC
 )
 target_link_libraries(oyster_story PUBLIC oyster_render luajit vorbisfile)
 
+# Android: headless engine self test, run from adb shell (no app window / OpenXR needed)
+if(ANDROID)
+  add_executable(oyster_selftest apps/android_selftest/main.cpp)
+  target_link_libraries(oyster_selftest PRIVATE oyster_story EGL GLESv3 log dl)
+endif()
+
 # Desktop tools and players (the Quest app lives in apps/quest and adds this directory)
 if(NOT ANDROID)
   add_executable(oyster_lua apps/lua/main.cpp)

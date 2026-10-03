@@ -44,8 +44,10 @@ struct RenderTarget {
     GLuint fbo = 0, color = 0, depth = 0;  // resolved single-sample colour texture (+ depth)
     GLuint msFbo = 0, msColor = 0, msDepth = 0;  // multisampled draw target (samples > 1)
     int width = 0, height = 0, samples = 1;
+    bool implicitMsaa = false;  // EXT_multisampled_render_to_texture: resolve happens on store
     GLuint drawFbo() const { return msFbo ? msFbo : fbo; }
     void resolve() const;  // MSAA -> texture, glBlitFramebuffer(GL_NEAREST) as in the original
+    void discardDepth() const;  // depth/stencil are not needed after the pass (tile GPUs: no store)
     void destroy();
 };
 RenderTarget createRenderTarget(int w, int h, bool depth, int samples = 1);
@@ -84,6 +86,8 @@ public:
     size_t drawCalls() const { return drawCalls_; }
     double prepareMs = 0, executeMs = 0, imageMs = 0, uploadMs = 0;  // CPU time split (accumulated, Engine timing)
     size_t uploadBytes = 0;
+    double texReadMs = 0, texDecodeMs = 0, texUploadMs = 0;  // texture loads (accumulated)
+    size_t texLoads = 0;
     void resetStats() { drawCalls_ = 0; }
     std::vector<std::string> warnings;
 

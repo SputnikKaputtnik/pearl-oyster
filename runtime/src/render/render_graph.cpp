@@ -104,6 +104,7 @@ void RenderGraph::execute(Renderer& r, const std::vector<SceneItem>& items, cons
             vp.viewFlag = n.view.viewFlag;
             vp.passId = n.passId;
             r.drawScene(items, vp);
+            n.target.discardDepth();
             n.target.resolve();
             if (!n.globalSampler.empty()) vp.globalSamplers[n.globalSampler] = n.target.color;
         } else {

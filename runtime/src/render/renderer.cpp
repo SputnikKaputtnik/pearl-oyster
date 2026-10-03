@@ -9,6 +9,13 @@
 
 namespace oyster {
 
+namespace {
+double cpuMs() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
+
 using namespace gl;
 
 namespace {
@@ -59,6 +66,26 @@ void RenderTarget::destroy() {
     *this = RenderTarget();
 }
 
+// Tile-based GPUs (Quest/Adreno) multisample in tile memory with EXT_multisampled_render_to_texture
+// and resolve while storing the tile; same 2x box resolve as the blit, without the extra pass and
+// the bandwidth of a separate multisampled buffer. OYSTER_NO_MSRTT=1 forces the blit path.
+static bool useMsrtt() {
+    static const bool on = [] {
+        if (std::getenv("OYSTER_NO_MSRTT")) return false;
+        if (!glFramebufferTexture2DMultisampleEXT || !glRenderbufferStorageMultisampleEXT) return false;
+        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        return ext && std::strstr(ext, "GL_EXT_multisampled_render_to_texture") != nullptr;
+    }();
+    return on;
+}
+
+void RenderTarget::discardDepth() const {
+    if (!glInvalidateFramebuffer || (!depth && !msDepth)) return;
+    const GLenum att[2] = {GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
+    glBindFramebuffer(GL_FRAMEBUFFER, drawFbo());
+    glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, att);
+}
+
 void RenderTarget::resolve() const {
     if (!msFbo) return;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, msFbo);
@@ -81,6 +108,18 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glGenFramebuffers(1, &t.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+    if (samples > 1 && useMsrtt()) {
+        t.implicitMsaa = true;
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0, samples);
+        if (depth) {
+            glGenRenderbuffers(1, &t.depth);
+            glBindRenderbuffer(GL_RENDERBUFFER, t.depth);
+            glRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, w, h);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth);
+        }
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "MSRTT framebuffer incomplete\n");
+        return t;
+    }
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0);
     if (depth && samples <= 1) {
         glGenRenderbuffers(1, &t.depth);
@@ -193,8 +232,13 @@ GLuint Renderer::texture(const std::string& uri) {
         return it->second;
     }
     GLuint t = 0;
+    double tl0 = cpuMs();
+    ++texLoads;
     try {
         TextureData d = loadDDS(fs_.read(uri));
+        double tl1 = cpuMs();
+        texReadMs += tl1 - tl0;
+        tl0 = tl1;
         textureSizes_[uri] = {static_cast<int>(d.width), static_cast<int>(d.height)};
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
@@ -214,6 +258,9 @@ GLuint Renderer::texture(const std::string& uri) {
             d.level0.swap(rgba);
             d.format = TexFormat::RGBA8;
         }
+        tl1 = cpuMs();
+        texDecodeMs += tl1 - tl0;
+        tl0 = tl1;
         TexUse& use = texUse_[uri];
         use.lastUse = frame_;
         use.bytes = d.format == TexFormat::RGBA8 ? static_cast<size_t>(d.width) * d.height * 4 : d.level0.size();
@@ -233,6 +280,7 @@ GLuint Renderer::texture(const std::string& uri) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         if (glGetError() != GL_NO_ERROR) warnOnce("GL error uploading " + uri);
+        texUploadMs += cpuMs() - tl0;
     } catch (const std::exception& e) {
         warnOnce(std::string("texture ") + uri + ": " + e.what());
         t = white_;
@@ -487,12 +535,6 @@ uint64_t Renderer::sortKey(const MaterialPass& pass, float depth) {
     return ((static_cast<uint64_t>(group & 0xFF) | (0x7Full << 8)) * 2 | (blend ? 1u : 0u)) << 30 |
            static_cast<uint64_t>(mid & 0x7FFF) << 15 | static_cast<uint64_t>(lo & 0x7FFF);
 }
-
-namespace {
-double cpuMs() {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-}  // namespace
 
 void Renderer::drawScene(const std::vector<SceneItem>& items, const ViewParams& vp) {
     double t0 = cpuMs();

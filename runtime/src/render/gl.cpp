@@ -8,7 +8,16 @@ namespace oyster::gl {
 OYSTER_GL_FUNCS(OYSTER_GL_DEFINE)
 #undef OYSTER_GL_DEFINE
 
+PFN_glInvalidateFramebuffer glInvalidateFramebuffer = nullptr;
+PFN_glFramebufferTexture2DMultisampleEXT glFramebufferTexture2DMultisampleEXT = nullptr;
+PFN_glRenderbufferStorageMultisampleEXT glRenderbufferStorageMultisampleEXT = nullptr;
+
 const char* load(void* (*getProc)(const char*)) {
+    glInvalidateFramebuffer = reinterpret_cast<PFN_glInvalidateFramebuffer>(getProc("glInvalidateFramebuffer"));
+    glFramebufferTexture2DMultisampleEXT =
+        reinterpret_cast<PFN_glFramebufferTexture2DMultisampleEXT>(getProc("glFramebufferTexture2DMultisampleEXT"));
+    glRenderbufferStorageMultisampleEXT =
+        reinterpret_cast<PFN_glRenderbufferStorageMultisampleEXT>(getProc("glRenderbufferStorageMultisampleEXT"));
 #define OYSTER_GL_LOAD(ret, name, args)                                   \
     name = reinterpret_cast<PFN_##name>(getProc(#name));                  \
     if (!name) return #name;
