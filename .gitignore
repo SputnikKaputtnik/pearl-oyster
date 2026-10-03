@@ -16,3 +16,11 @@ extracted/
 captures/
 __pycache__/
 *.pyc
+
+# Quest (Gradle) build outputs and machine-local settings
+runtime/apps/quest/.gradle/
+runtime/apps/quest/build/
+runtime/apps/quest/app/build/
+runtime/apps/quest/app/.cxx/
+runtime/apps/quest/local.properties
+*.apk

@@ -1,0 +1,65 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Oyster player for Meta Quest (OpenXR + GLES 3). The native part is the shared runtime
+// (runtime/CMakeLists.txt) plus apps/quest/app/src/main/cpp. Pearl's data is NOT packaged:
+// the user copies their own installation to the app's external files directory (README.md).
+def openxrRoot = 'C:/OpenXR/install/android-arm64-v8a'
+
+android {
+    namespace 'org.oyster.pearl'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'org.oyster.pearl'
+        minSdk 32
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0-dev'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DOYSTER_OPENXR_ANDROID_ROOT=${openxrRoot}", '-DANDROID_STL=c++_static'
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // the engine is far too slow unoptimised; keep symbols for crash reports
+            externalNativeBuild {
+                cmake {
+                    arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
+                }
+            }
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs "${openxrRoot}/jni"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
