@@ -859,7 +859,9 @@ void Engine::draw() {
         ViewParams ev = vp;
         Mat4 shift;
         shift.m[3] = eye == 0 ? half : -half;
-        ev.view = shift * vp.view;
+        Mat4 lift;  // HmdState::eyeRaise: camera moved up in world space (story units per metre = IPD scalar)
+        lift.m[7] = -hmd_.eyeRaise * ipdScalar;
+        ev.view = shift * (vp.view * lift);
         const HmdState::Eye& e = hmd_.eye[eye];
         float l = e.tanLeft * zn, r = e.tanRight * zn, t = e.tanUp * zn, b = e.tanDown * zn;
         Mat4 proj;  // Matrix4::makeFrustum

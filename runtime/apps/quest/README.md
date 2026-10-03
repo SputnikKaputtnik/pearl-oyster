@@ -77,10 +77,13 @@ height); the tracking origin is the floor (LOCAL_FLOOR).
 resolution_scale = 1.30   # eye image = recommended size (1680x1760 on Quest 3) x this (default 1.3 = 2184x2288)
 animation = original      # or: interpolated (remaster: the authored stepped keys interpolated)
 msaa = 2                  # 1, 2 (the original's -msaa 2) or 4
+eye_height_offset = 0.00  # not in the original: eye cameras raised by this many metres
 ```
 
 While the story plays, controller button **A** (right) or **X** (left) switches the animation
-between original and interpolated; a panel shows the new mode for two seconds.
+between original and interpolated; a panel shows the new mode for two seconds. The thumbsticks
+(up/down) raise or lower the eye cameras in 5 cm steps (saved in oyster.cfg). This is a deviation
+from the original, display only: the story still sees the real head pose (seat check, camera rig).
 
 Shot changes: textures and mesh buffers of the models the story prefetches are uploaded in the
 frames before they are needed. Resources the story loads without announcing them (or announces

@@ -141,9 +141,13 @@ struct App {
     float resolutionScale = kDefaultResolutionScale;
     bool interpolate = false;  // remaster: interpolate the original's stepped animation keys
     int msaa = 2;
-    // controller: A (right) / X (left) toggles the animation interpolation
+    float eyeRaise = 0.0f;  // metres, display only (HmdState::eyeRaise); thumbstick up/down
+    // controller: A (right) / X (left) toggles the animation interpolation, the thumbsticks
+    // (up/down) raise or lower the eye height in 5 cm steps
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction toggleAction = XR_NULL_HANDLE;
+    XrAction heightAction = XR_NULL_HANDLE;
+    int heightStick = 0;  // -1 / 0 / +1: last stick zone (one step per push)
     std::string notice;       // shown on a head-locked panel for a moment
     XrTime noticeUntil = 0;
 };
@@ -270,7 +274,10 @@ void loadConfig(App& a) {
                          "# the A / X controller button switches it while the story plays\n"
                          "animation = original\n"
                          "# multisampling of the eye images: 1, 2 (the original's -msaa 2) or 4\n"
-                         "msaa = 2\n",
+                         "msaa = 2\n"
+                         "# not in the original: eye cameras raised by this many metres (display only);\n"
+                         "# the thumbsticks (up/down) change it in 5 cm steps and save it here\n"
+                         "eye_height_offset = 0.00\n",
                          kDefaultResolutionScale);
             std::fclose(w);
         }
@@ -291,11 +298,37 @@ void loadConfig(App& a) {
             if (k == "resolution_scale") a.resolutionScale = std::max(0.5f, std::min(2.0f, std::strtof(v.c_str(), nullptr)));
             else if (k == "animation") a.interpolate = v == "interpolated";
             else if (k == "msaa") a.msaa = std::max(1, std::min(4, std::atoi(v.c_str())));
+            else if (k == "eye_height_offset") a.eyeRaise = std::max(-1.0f, std::min(1.0f, std::strtof(v.c_str(), nullptr)));
         }
         std::fclose(f);
     }
-    LOGI("settings: resolution_scale %.2f, animation %s, msaa %d", a.resolutionScale,
-         a.interpolate ? "interpolated" : "original", a.msaa);
+    LOGI("settings: resolution_scale %.2f, animation %s, msaa %d, eye_height_offset %.2f", a.resolutionScale,
+         a.interpolate ? "interpolated" : "original", a.msaa, a.eyeRaise);
+}
+
+// Writes one "key = value" line of oyster.cfg (replaced in place, else appended).
+void saveSetting(const std::string& key, const std::string& value) {
+    std::string path = std::string(kSharedRoot) + "/oyster.cfg";
+    std::vector<std::string> lines;
+    if (std::FILE* f = std::fopen(path.c_str(), "rb")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) lines.emplace_back(line);
+        std::fclose(f);
+    }
+    bool found = false;
+    for (std::string& l : lines) {
+        size_t p = l.find_first_not_of(" \t");  // "<key> = ..." (not a comment, not a longer key)
+        size_t q = p == std::string::npos ? p : l.find_first_not_of(" \t", p + key.size());
+        if (p != std::string::npos && l.compare(p, key.size(), key) == 0 && q != std::string::npos && l[q] == '=') {
+            l = key + " = " + value + "\n";
+            found = true;
+        }
+    }
+    if (!found) lines.push_back(key + " = " + value + "\n");
+    if (std::FILE* f = std::fopen(path.c_str(), "wb")) {
+        for (const std::string& l : lines) std::fputs(l.c_str(), f);
+        std::fclose(f);
+    }
 }
 
 // Controller button A (right) / X (left): toggles the animation interpolation.
@@ -309,15 +342,25 @@ void createActions(App& a) {
     std::snprintf(ac.actionName, XR_MAX_ACTION_NAME_SIZE, "toggle_interpolation");
     std::snprintf(ac.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "Toggle animation interpolation");
     if (!xrOk("xrCreateAction", xrCreateAction(a.actionSet, &ac, &a.toggleAction))) return;
-    XrPath profile = XR_NULL_PATH, aButton = XR_NULL_PATH, xButton = XR_NULL_PATH;
+    ac.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    std::snprintf(ac.actionName, XR_MAX_ACTION_NAME_SIZE, "eye_height");
+    std::snprintf(ac.localizedActionName, XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "Eye height");
+    if (!xrOk("xrCreateAction", xrCreateAction(a.actionSet, &ac, &a.heightAction))) return;
+    XrPath profile = XR_NULL_PATH, aButton = XR_NULL_PATH, xButton = XR_NULL_PATH, rStick = XR_NULL_PATH,
+           lStick = XR_NULL_PATH;
     xrStringToPath(a.instance, "/interaction_profiles/oculus/touch_controller", &profile);
     xrStringToPath(a.instance, "/user/hand/right/input/a/click", &aButton);
     xrStringToPath(a.instance, "/user/hand/left/input/x/click", &xButton);
-    XrActionSuggestedBinding b[] = {{a.toggleAction, aButton}, {a.toggleAction, xButton}};
+    xrStringToPath(a.instance, "/user/hand/right/input/thumbstick/y", &rStick);
+    xrStringToPath(a.instance, "/user/hand/left/input/thumbstick/y", &lStick);
+    XrActionSuggestedBinding b[] = {{a.toggleAction, aButton},
+                                    {a.toggleAction, xButton},
+                                    {a.heightAction, rStick},
+                                    {a.heightAction, lStick}};
     XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     sb.interactionProfile = profile;
     sb.suggestedBindings = b;
-    sb.countSuggestedBindings = 2;
+    sb.countSuggestedBindings = 4;
     xrOk("xrSuggestInteractionProfileBindings", xrSuggestInteractionProfileBindings(a.instance, &sb));
     XrSessionActionSetsAttachInfo at{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     at.countActionSets = 1;
@@ -333,6 +376,29 @@ void pollActions(App& a, XrTime now) {
     sy.countActiveActionSets = 1;
     sy.activeActionSets = &active;
     if (XR_FAILED(xrSyncActions(a.session, &sy))) return;
+    // eye height: one 5 cm step per push of a thumbstick up or down
+    if (a.heightAction) {
+        XrActionStateGetInfo hi{XR_TYPE_ACTION_STATE_GET_INFO};
+        hi.action = a.heightAction;
+        XrActionStateFloat hs{XR_TYPE_ACTION_STATE_FLOAT};
+        if (XR_SUCCEEDED(xrGetActionStateFloat(a.session, &hi, &hs)) && hs.isActive) {
+            int zone = hs.currentState > 0.7f ? 1 : hs.currentState < -0.7f ? -1 : 0;
+            if (zone != 0 && zone != a.heightStick) {
+                a.eyeRaise = std::max(-0.5f, std::min(0.8f, std::round((a.eyeRaise + 0.05f * static_cast<float>(zone)) * 20.0f) / 20.0f));
+                a.engine->hmd().eyeRaise = a.eyeRaise;
+                char text[48];
+                std::snprintf(text, sizeof(text), "EYE HEIGHT %+d CM", static_cast<int>(std::lround(a.eyeRaise * 100.0f)));
+                a.notice = text;
+                a.noticeUntil = now + 2000000000;
+                char v[16];
+                std::snprintf(v, sizeof(v), "%.2f", a.eyeRaise);
+                saveSetting("eye_height_offset", v);
+                LOGI("eye height offset %.2f m", a.eyeRaise);
+            }
+            if (std::fabs(hs.currentState) < 0.3f) a.heightStick = 0;
+            else if (zone != 0) a.heightStick = zone;
+        }
+    }
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a.toggleAction;
     XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
@@ -433,6 +499,7 @@ const uint8_t* glyph(char c) {
         {'7', {31, 1, 2, 4, 8, 8, 8}},       {'8', {14, 17, 17, 14, 17, 17, 14}}, {'9', {14, 17, 17, 15, 1, 2, 12}},
         {'%', {25, 26, 2, 4, 8, 11, 19}},    {'.', {0, 0, 0, 0, 0, 12, 12}},   {'T', {31, 4, 4, 4, 4, 4, 4}},
         {'F', {31, 16, 16, 30, 16, 16, 16}}, {'U', {17, 17, 17, 17, 17, 17, 14}}, {'X', {17, 17, 10, 4, 10, 17, 17}},
+        {'Y', {17, 17, 10, 4, 4, 4, 4}},     {'+', {0, 4, 4, 31, 4, 4, 0}},       {'-', {0, 0, 0, 31, 0, 0, 0}},
     };
     for (const auto& g : font)
         if (g.c == c) return g.rows;
@@ -525,6 +592,7 @@ void startEngine(App& a) {
         h.width = a.swapchains[0].width;
         h.height = a.swapchains[0].height;
         h.position = Vec3(0, 1.2f, 0);
+        h.eyeRaise = a.eyeRaise;
         a.engine->renderer().setTextureBudget(kTextureBudget);
         a.engine->time().fixedStepMs = 0;  // real time
         // every shader is built before the story starts (no compiles while it plays); from the

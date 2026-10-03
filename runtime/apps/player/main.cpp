@@ -36,7 +36,8 @@ struct Args {
     long frames = 0, dumpFrom = 0, dumpEvery = 1, status = 0;
     bool window = false, remaster = false, log = false, mute = false;
     bool threaded = false;  // GL calls on a render thread (render/gl_thread.h)
-    bool vr = false;  // desktop HMD emulation: stereo, head = mouse (docs/vr.md)
+    bool vr = false;
+    float eyeRaise = 0;  // --eye-raise <metres>: HmdState::eyeRaise (display only)  // desktop HMD emulation: stereo, head = mouse (docs/vr.md)
     int eyeW = 1024, eyeH = 1056;
 };
 
@@ -62,6 +63,7 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--wav") a.wav = next();
         else if (k == "--mute") a.mute = true;
         else if (k == "--vr") a.vr = true;
+        else if (k == "--eye-raise") a.eyeRaise = std::stof(next());
         else if (k == "--threaded") a.threaded = true;
         else if (k == "--eye") { std::string s = next(); std::sscanf(s.c_str(), "%dx%d", &a.eyeW, &a.eyeH); }
         else {
@@ -168,6 +170,7 @@ int main(int argc, char** argv) {
             h.eye[1] = {-0.84f, 1.13f, 0.90f, -1.13f};
             if (const char* hd = std::getenv("OYSTER_DEBUG_HEAD")) std::sscanf(hd, "%f,%f,%f", &headYaw, &headPitch, &headHeight);
             h.position = Vec3(0, headHeight, 0);
+            h.eyeRaise = args.eyeRaise;
         }
         engine.lua().echoLog = args.log;
         engine.time().fixedStepMs = args.fixedMs;

@@ -139,6 +139,10 @@ struct HmdState {
         float tanLeft = -1, tanRight = 1, tanUp = 1, tanDown = -1;
     } eye[2];
     int width = 1024, height = 1024;
+    // Not in the original: raises the eye cameras by this many metres when rendering (the viewer
+    // sits lower in the passenger seat than the film's framing suggests). Display only - the
+    // story still sees the real head pose (userIsSeated, camera rig), so nothing else changes.
+    float eyeRaise = 0.0f;
 };
 
 // Plain handle types the scripts only pass around (resource groups, FSMs, stats, views, ...).
