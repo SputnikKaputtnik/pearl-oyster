@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace oyster {
@@ -51,13 +52,25 @@ void RenderTarget::destroy() {
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (color) glDeleteTextures(1, &color);
     if (depth) glDeleteRenderbuffers(1, &depth);
+    if (msFbo) glDeleteFramebuffers(1, &msFbo);
+    if (msColor) glDeleteRenderbuffers(1, &msColor);
+    if (msDepth) glDeleteRenderbuffers(1, &msDepth);
     *this = RenderTarget();
 }
 
-RenderTarget createRenderTarget(int w, int h, bool depth) {
+void RenderTarget::resolve() const {
+    if (!msFbo) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, msFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+}
+
+RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
     RenderTarget t;
     t.width = w;
     t.height = h;
+    t.samples = samples;
     glGenTextures(1, &t.color);
     glBindTexture(GL_TEXTURE_2D, t.color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -68,13 +81,28 @@ RenderTarget createRenderTarget(int w, int h, bool depth) {
     glGenFramebuffers(1, &t.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0);
-    if (depth) {
+    if (depth && samples <= 1) {
         glGenRenderbuffers(1, &t.depth);
         glBindRenderbuffer(GL_RENDERBUFFER, t.depth);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth);
     }
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "framebuffer incomplete\n");
+    if (samples > 1) {
+        glGenFramebuffers(1, &t.msFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, t.msFbo);
+        glGenRenderbuffers(1, &t.msColor);
+        glBindRenderbuffer(GL_RENDERBUFFER, t.msColor);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, w, h);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, t.msColor);
+        if (depth) {
+            glGenRenderbuffers(1, &t.msDepth);
+            glBindRenderbuffer(GL_RENDERBUFFER, t.msDepth);
+            glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, w, h);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.msDepth);
+        }
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "MSAA framebuffer incomplete\n");
+    }
     return t;
 }
 
@@ -99,6 +127,7 @@ Renderer::~Renderer() {
         if (g.dynNrm) glDeleteBuffers(1, &g.dynNrm);
     }
     glDeleteTextures(1, &white_);
+    if (quadVao_) { glDeleteVertexArrays(1, &quadVao_); glDeleteBuffers(1, &quadVbo_); }
 }
 
 void Renderer::warnOnce(const std::string& w) {
@@ -233,6 +262,74 @@ void Renderer::applyRenderState(const RenderState& s) {
     en(GL_POLYGON_OFFSET_FILL, s.polygonOffset);
     glPolygonOffset(s.polygonOffsetFactor, s.polygonOffsetUnits);
     en(GL_DITHER, s.dither);
+}
+
+void Renderer::drawImage(const Material& mat, const std::vector<const RenderTarget*>& inputs, const ViewParams& vp,
+                         const ModelInstance* anim) {
+    if (mat.passes.empty()) return;
+    const MaterialPass& pass = mat.passes[0];
+    Program* prog = program(pass.shader.uri);
+    if (!prog || !prog->ok) return;
+    if (!quadVao_) {
+        const float quad[12] = {-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0};
+        glGenVertexArrays(1, &quadVao_);
+        glBindVertexArray(quadVao_);
+        glGenBuffers(1, &quadVbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    }
+    glUseProgram(prog->id);
+    applyRenderState(pass.state);
+    const auto& un = prog->meta.uniforms;
+    for (const MaterialParam& p : pass.params) {
+        if (p.uniformIndex >= un.size() || p.type != 0) continue;
+        GLint loc = prog->loc[p.uniformIndex];
+        if (loc < 0) continue;
+        float v[4] = {0, 0, 0, 0};
+        size_t n = std::min<size_t>(p.values.size(), 4);
+        for (size_t i = 0; i < n; ++i) v[i] = p.values[i];
+        float ov[4];
+        uint32_t mask = 0;
+        if (anim && anim->materialOverride(0, p.nameHash, 0, ov, &mask))
+            for (int c = 0; c < 4; ++c) if (mask & (1u << c)) v[c] = ov[c];
+        switch (n) {
+            case 1: glUniform1fv(loc, 1, v); break;
+            case 2: glUniform2fv(loc, 1, v); break;
+            case 3: glUniform3fv(loc, 1, v); break;
+            default: glUniform4fv(loc, 1, v); break;
+        }
+    }
+    float texel[16] = {};
+    for (size_t i = 0; i < inputs.size() && i < 8; ++i) {
+        texel[2 * i] = 1.0f / static_cast<float>(inputs[i]->width);
+        texel[2 * i + 1] = 1.0f / static_cast<float>(inputs[i]->height);
+    }
+    for (size_t i = 0; i < un.size(); ++i) {
+        GLint loc = prog->loc[i];
+        if (loc < 0) continue;
+        const ShaderUniform& u = un[i];
+        if (u.name.rfind("u_texture", 0) == 0 && u.cls >= 3) {
+            size_t k = static_cast<size_t>(std::atoi(u.name.c_str() + 9));
+            glActiveTexture(GL_TEXTURE0 + static_cast<GLenum>(u.unit));
+            glBindTexture(GL_TEXTURE_2D, k < inputs.size() ? inputs[k]->color : white_);
+            glUniform1i(loc, u.unit);
+        } else if (u.name == "u_texelSize") {
+            glUniform2fv(loc, 8, texel);
+        } else if (u.semantic == static_cast<uint16_t>(Semantic::AspectRatio)) {
+            glUniform1fv(loc, 1, &vp.aspect);
+        } else if (u.semantic == static_cast<uint16_t>(Semantic::ViewMid)) {
+            const float mid[2] = {0, 0};  // [I] mono: view centre = 0
+            glUniform2fv(loc, 1, mid);
+        } else if (u.semantic == static_cast<uint16_t>(Semantic::Time)) {
+            glUniform1fv(loc, 1, &vp.time);
+        }
+    }
+    glBindVertexArray(quadVao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    ++drawCalls_;
 }
 
 void Renderer::clear(const float c[4]) {

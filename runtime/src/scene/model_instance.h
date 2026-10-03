@@ -45,7 +45,8 @@ public:
     bool nodeVisible(size_t i) const { return nodeVisible_[i] != 0; }
     const MeshState& meshState(size_t i) const { return meshes_[i]; }
 
-    // Animated material parameter override for (material, param, pass); count = components set.
+    // Animated material parameter override for (material, param, pass); mask = components set.
+    // Render-graph parameters (customA == 1) are stored under (0, param, 0).
     bool materialOverride(uint32_t materialHash, uint32_t paramHash, uint32_t pass, float out[4], uint32_t* mask) const;
 
 private:

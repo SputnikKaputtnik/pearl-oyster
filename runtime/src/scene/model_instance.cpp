@@ -115,10 +115,15 @@ void ModelInstance::evaluate(const SamplingPolicy& policy) {
             }
             for (size_t c = 0; c < tr.custom.size(); ++c) {
                 const AnimChannel& ch = tr.custom[c];
-                if (ch.keys.empty() || ch.customVals.size() < 4) continue;
+                if (ch.keys.empty() || ch.customVals.size() < 3) continue;
                 float v = sampleFloat(tr, ch, *anim_, customCaches_[t][c], policy);
-                ParamValue& pv = params_[{ch.customVals[0], ch.customVals[1], ch.customVals[2]}];
-                uint32_t comp = ch.customVals[3] & 3;
+                // material channels: [materialHash, paramHash, pass, component];
+                // render-graph channels (customA == 1): [paramHash, type, component]
+                bool graph = ch.customA == 1;
+                if (graph && ch.customVals.size() < 3) continue;
+                ParamValue& pv = graph ? params_[{0u, ch.customVals[0], 0u}]
+                                       : params_[{ch.customVals[0], ch.customVals[1], ch.customVals[2]}];
+                uint32_t comp = (graph ? ch.customVals[2] : ch.customVals[3]) & 3;
                 pv.v[comp] = v;
                 pv.mask |= 1u << comp;
             }

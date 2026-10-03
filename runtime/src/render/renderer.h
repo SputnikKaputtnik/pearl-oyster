@@ -38,11 +38,14 @@ struct ViewParams {
 };
 
 struct RenderTarget {
-    GLuint fbo = 0, color = 0, depth = 0;
-    int width = 0, height = 0;
+    GLuint fbo = 0, color = 0, depth = 0;  // resolved single-sample colour texture (+ depth)
+    GLuint msFbo = 0, msColor = 0, msDepth = 0;  // multisampled draw target (samples > 1)
+    int width = 0, height = 0, samples = 1;
+    GLuint drawFbo() const { return msFbo ? msFbo : fbo; }
+    void resolve() const;  // MSAA -> texture, glBlitFramebuffer(GL_NEAREST) as in the original
     void destroy();
 };
-RenderTarget createRenderTarget(int w, int h, bool depth);
+RenderTarget createRenderTarget(int w, int h, bool depth, int samples = 1);
 
 struct SceneItem {
     const ModelInstance* inst = nullptr;
@@ -58,6 +61,10 @@ public:
     // key (RenderDispatcher::makeSortKey) and executes them.
     void drawScene(const std::vector<SceneItem>& items, const ViewParams& vp);
     void clear(const float color[4]);
+    // Post-effect material over a fullscreen quad; inputs bound to u_texture0.., their texel
+    // sizes to u_texelSize[i]; render-graph animation overrides from `anim` (customA == 1).
+    void drawImage(const Material& mat, const std::vector<const RenderTarget*>& inputs, const ViewParams& vp,
+                   const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
     size_t drawCalls() const { return drawCalls_; }
@@ -104,6 +111,7 @@ private:
     std::map<std::string, bool> warned_;
     size_t drawCalls_ = 0;
     GLuint white_ = 0;
+    GLuint quadVao_ = 0, quadVbo_ = 0;
 };
 
 }  // namespace oyster

@@ -53,6 +53,16 @@ struct RenderState {  // MOXIE::RenderState, 0x94 bytes
     float polygonOffsetFactor = 0, polygonOffsetUnits = 0;
     bool dither = false;
     float f90 = 1.0f;
+    // RenderState::DEFAULT (@0x18030ccd0): no blend, no depth test, depth write, no cull
+    static RenderState engineDefault() {
+        RenderState s;
+        s.depthTest = false;
+        s.cull = false;
+        s.stencilMask = 255;
+        s.stencilReadMask = 255;
+        s.stencilFunc = 22;  // GREATER
+        return s;
+    }
 };
 RenderState readRenderState(Reader& r);
 
@@ -87,5 +97,7 @@ struct Material {
     std::vector<MaterialPass> passes;
 };
 Material readMaterial(Reader& r);
+// .pfb material library: u8 count + Material[count]
+std::vector<Material> loadMaterialLibrary(const std::vector<uint8_t>& data);
 
 }  // namespace oyster

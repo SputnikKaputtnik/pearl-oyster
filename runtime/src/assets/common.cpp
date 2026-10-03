@@ -103,4 +103,13 @@ Material readMaterial(Reader& r) {
     return m;
 }
 
+std::vector<Material> loadMaterialLibrary(const std::vector<uint8_t>& data) {
+    Reader r(data);
+    uint8_t n = r.u8();
+    std::vector<Material> out;
+    for (uint8_t i = 0; i < n; ++i) out.push_back(readMaterial(r));
+    if (!r.eof()) throw FormatError("trailing bytes in material library");
+    return out;
+}
+
 }  // namespace oyster

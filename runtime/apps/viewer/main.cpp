@@ -6,8 +6,9 @@
 // docs/viewer.md), and the state's lights.
 //
 // Usage: oyster_viewer --root <install> --def <def.json> --state <name> --time <seconds>
-//                      [--size 1280x720] [--out frame.tga] [--utime <u_time>] [--view main|shadow|warp]
-//                      [--remaster]
+//                      [--size 1280x720] [--out frame.tga] [--utime <u_time>]
+//                      [--view main|nopost|<render graph node name>]
+//                      [--remaster] [--count N --dt <s>  (out must contain a %d pattern)]
 #include <SDL.h>
 
 #include <cmath>
@@ -25,6 +26,7 @@
 #include "core/json.h"
 #include "core/pkgfs.h"
 #include "render/gl.h"
+#include "render/render_graph.h"
 #include "render/renderer.h"
 #include "scene/model_instance.h"
 
@@ -35,9 +37,13 @@ namespace {
 
 struct Args {
     std::string root, def, state, out = "frame.tga", view = "main";
-    float time = 0, utime = -1;
+    float time = 0, utime = -1, dt = 1.0f / 30.0f;
+    int count = 1;
     int w = 1280, h = 720;
     bool remaster = false;
+    int msaa = 2;
+    bool hold = false;
+    int viewIndex = 0;  // batch: keep animation time, advance only u_time
 };
 
 Vec3 jsonVec3(const Json& j, Vec3 def) {
@@ -122,9 +128,14 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--state") a.state = next();
         else if (k == "--time") a.time = std::stof(next());
         else if (k == "--utime") a.utime = std::stof(next());
+        else if (k == "--dt") a.dt = std::stof(next());
+        else if (k == "--count") a.count = std::stoi(next());
         else if (k == "--out") a.out = next();
         else if (k == "--view") a.view = next();
         else if (k == "--remaster") a.remaster = true;
+        else if (k == "--msaa") a.msaa = std::stoi(next());
+        else if (k == "--hold") a.hold = true;
+        else if (k == "--viewindex") a.viewIndex = std::stoi(next());
         else if (k == "--size") {
             std::string s = next();
             std::sscanf(s.c_str(), "%dx%d", &a.w, &a.h);
@@ -173,6 +184,8 @@ int main(int argc, char** argv) {
         std::vector<Light> lights;
         std::unique_ptr<ModelInstance> rig;
         const Json* rigDef = nullptr;
+        const Json* rgDef = nullptr;
+        std::unique_ptr<ModelInstance> rgInst;
 
         auto setupAnim = [&](ModelInstance& inst, const Json& adef) {
             const Json& clip = adef["animation"][args.state];
@@ -180,7 +193,6 @@ int main(int argc, char** argv) {
             AnimationPlayback pb;
             pb.setup(cache.anim(clip[0].str()), static_cast<int>(clip[1].num()), static_cast<int>(clip[2].num()),
                      clip[3].boolean(), true);
-            pb.advance(args.time);
             inst.setAnimation(pb);
         };
 
@@ -201,6 +213,12 @@ int main(int argc, char** argv) {
                 rig = cache.instantiate((*rigDef)["model"].str());
                 rig->root = jsonTransform((*rigDef)["transform"]);
                 setupAnim(*rig, *rigDef);
+            } else if (def["rgraph"].has(name)) {
+                rgDef = &def["rgraph"][name];
+                if (rgDef->has("model")) {
+                    rgInst = cache.instantiate((*rgDef)["model"].str());
+                    setupAnim(*rgInst, *rgDef);
+                }
             } else if (def["lights"].has(name)) {
                 const Json& l = def["lights"][name];
                 Light li;
@@ -218,29 +236,6 @@ int main(int argc, char** argv) {
         std::printf("state %s: %zu actors, %zu lights, camera rig %s\n", args.state.c_str(), actors.size(), lights.size(),
                     rig ? "yes" : "no");
 
-        for (auto& a : actors) a.inst->evaluate(policy);
-
-        // Mono camera (CameraRigController, cameraOrientationMode 1, no sensor/mouse input):
-        // orientation = boom origin world rotation; position = boom origin + R * (0,0,-L),
-        // L = -boomEnd.local.z (squash factors 1 -> unchanged length).
-        Mat4 camWorld;
-        if (rig) {
-            rig->evaluate(policy);
-            const Json& comp = (*rigDef)["components"][0];
-            int origin = rig->model().findNode(comp["boomOrigin"].str());
-            int end = rig->model().findNode(comp["boomEnd"].str());
-            if (origin < 0 || end < 0) throw std::runtime_error("camera rig bones not found");
-            const Mat4& ow = rig->nodeWorld(static_cast<size_t>(origin));
-            Vec3 cx = Vec3(ow.m[0], ow.m[4], ow.m[8]).normalized();
-            Vec3 cy = Vec3(ow.m[1], ow.m[5], ow.m[9]).normalized();
-            Vec3 cz = Vec3(ow.m[2], ow.m[6], ow.m[10]).normalized();
-            float L = -rig->nodeLocal(static_cast<size_t>(end)).m[11];
-            Vec3 pos = ow.translation() + cz * (-L);
-            camWorld.m[0] = cx.x; camWorld.m[1] = cy.x; camWorld.m[2] = cz.x; camWorld.m[3] = pos.x;
-            camWorld.m[4] = cx.y; camWorld.m[5] = cy.y; camWorld.m[6] = cz.y; camWorld.m[7] = pos.y;
-            camWorld.m[8] = cx.z; camWorld.m[9] = cy.z; camWorld.m[10] = cz.z; camWorld.m[11] = pos.z;
-            std::printf("camera at (%.2f %.2f %.2f) boom %.2f\n", pos.x, pos.y, pos.z, L);
-        }
         const Json& cam = def["cameras"]["MainCamera"]["proj"];
         float fov = static_cast<float>(cam["fov"].num(48.7955)) * 3.14159265358979f / 180.0f;
         float zn = static_cast<float>(cam["znear"].num(5)), zf = static_cast<float>(cam["zfar"].num(1e7));
@@ -254,45 +249,100 @@ int main(int argc, char** argv) {
         proj.m[14] = -1.0f; proj.m[15] = 0.0f;
 
         Renderer r(fs);
-        ViewParams vp;
-        vp.view = camWorld.inverse();
-        vp.proj = proj;
-        vp.aspect = aspect;
-        vp.zfar = zf;
         std::vector<SceneItem> items;
         for (auto& a : actors) items.push_back({a.inst.get(), a.viewFlags});
-        vp.time = args.utime >= 0 ? args.utime : args.time;
-        vp.lights = lights;
-
-        // shadowview (RV3: viewFlag 8, pass 1, clear (0,0,0.5,0)) -> u_shadowPass
+        std::unique_ptr<RenderGraph> graph;
+        if (rgDef) {
+            graph = std::make_unique<RenderGraph>(*rgDef, def["renderviews"], fs);
+            graph->resize(args.w, args.h, args.msaa);
+        }
         RenderTarget shadow = createRenderTarget(args.w, args.h, true);
-        glBindFramebuffer(GL_FRAMEBUFFER, shadow.fbo);
-        glViewport(0, 0, args.w, args.h);
-        const float shadowClear[4] = {0, 0, 0.5f, 0};
-        r.clear(shadowClear);
-        vp.viewFlag = 8;
-        vp.passId = 1;
-        r.drawScene(items, vp);
-
         RenderTarget main = createRenderTarget(args.w, args.h, true);
-        RenderTarget* out = &main;
-        glBindFramebuffer(GL_FRAMEBUFFER, main.fbo);
-        glViewport(0, 0, args.w, args.h);
-        const float mainClear[4] = {0.5f, 0.5f, 0.5f, 1};
-        r.clear(mainClear);
-        vp.viewFlag = 2;
-        vp.passId = 2;
-        vp.globalSamplers["u_shadowPass"] = shadow.color;
-        if (args.view == "shadow") out = &shadow;
-        else r.drawScene(items, vp);
-
-        std::printf("draw calls %zu\n", r.drawCalls());
         std::vector<uint8_t> px(static_cast<size_t>(args.w) * args.h * 4);
-        glBindFramebuffer(GL_FRAMEBUFFER, out->fbo);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadPixels(0, 0, args.w, args.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-        writeTGA(args.out, args.w, args.h, px);
-        std::printf("wrote %s\n", args.out.c_str());
+
+        for (int k = 0; k < args.count; ++k) {
+            float t = args.hold ? args.time : args.time + static_cast<float>(k) * args.dt;
+            // story time t inside the state: every clip restarts at 0 and advances by t
+            auto seek = [&](ModelInstance& inst) {
+                if (AnimationPlayback* pb = inst.animation()) {
+                    pb->time = 0;
+                    pb->loopsDone = 0;
+                    pb->advance(t);
+                }
+                inst.evaluate(policy);
+            };
+            for (auto& a : actors) seek(*a.inst);
+            if (rgInst) seek(*rgInst);
+
+            // Mono camera (CameraRigController, cameraOrientationMode 1, no sensor/mouse input):
+            // orientation = boom origin world rotation; position = boom origin + R * (0,0,-L),
+            // L = -boomEnd.local.z (squash factors 1 -> unchanged length).
+            Mat4 camWorld;
+            if (rig) {
+                seek(*rig);
+                const Json& comp = (*rigDef)["components"][0];
+                int origin = rig->model().findNode(comp["boomOrigin"].str());
+                int end = rig->model().findNode(comp["boomEnd"].str());
+                if (origin < 0 || end < 0) throw std::runtime_error("camera rig bones not found");
+                const Mat4& ow = rig->nodeWorld(static_cast<size_t>(origin));
+                Vec3 cx = Vec3(ow.m[0], ow.m[4], ow.m[8]).normalized();
+                Vec3 cy = Vec3(ow.m[1], ow.m[5], ow.m[9]).normalized();
+                Vec3 cz = Vec3(ow.m[2], ow.m[6], ow.m[10]).normalized();
+                float L = -rig->nodeLocal(static_cast<size_t>(end)).m[11];
+                Vec3 pos = ow.translation() + cz * (-L);
+                camWorld.m[0] = cx.x; camWorld.m[1] = cy.x; camWorld.m[2] = cz.x; camWorld.m[3] = pos.x;
+                camWorld.m[4] = cx.y; camWorld.m[5] = cy.y; camWorld.m[6] = cz.y; camWorld.m[7] = pos.y;
+                camWorld.m[8] = cx.z; camWorld.m[9] = cy.z; camWorld.m[10] = cz.z; camWorld.m[11] = pos.z;
+            }
+            ViewParams vp;
+            vp.view = camWorld.inverse();
+            vp.proj = proj;
+            vp.aspect = aspect;
+            vp.zfar = zf;
+            vp.time = args.utime >= 0 ? args.utime + static_cast<float>(k) * args.dt : t;
+            vp.lights = lights;
+            vp.viewIndex = args.viewIndex;
+
+            const RenderTarget* out = &main;
+            if (graph && args.view != "nopost") {
+                graph->execute(r, items, vp, rgInst.get());
+                out = &graph->output();
+                if (args.view != "main") {
+                    if (const RenderTarget* t = graph->nodeTarget(args.view)) out = t;
+                }
+            } else {
+                // no render graph: shadow view (RV3) + main view (RV1) only
+                glBindFramebuffer(GL_FRAMEBUFFER, shadow.fbo);
+                glViewport(0, 0, args.w, args.h);
+                const float shadowClear[4] = {0, 0, 0.5f, 0};
+                r.clear(shadowClear);
+                vp.viewFlag = 8;
+                vp.passId = 1;
+                r.drawScene(items, vp);
+                glBindFramebuffer(GL_FRAMEBUFFER, main.fbo);
+                glViewport(0, 0, args.w, args.h);
+                const float mainClear[4] = {0.5f, 0.5f, 0.5f, 1};
+                r.clear(mainClear);
+                vp.viewFlag = 2;
+                vp.passId = 2;
+                vp.globalSamplers["u_shadowPass"] = shadow.color;
+                if (args.view == "shadow") out = &shadow;
+                else r.drawScene(items, vp);
+            }
+            int ow = out->width, oh = out->height;
+            px.resize(static_cast<size_t>(ow) * oh * 4);
+            glBindFramebuffer(GL_FRAMEBUFFER, out->fbo);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, ow, oh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            std::string name = args.out;
+            if (args.count > 1) {
+                char buf[1024];
+                std::snprintf(buf, sizeof(buf), args.out.c_str(), k);
+                name = buf;
+            }
+            writeTGA(name, ow, oh, px);
+        }
+        std::printf("draw calls %zu, wrote %d frame(s)\n", r.drawCalls(), args.count);
         shadow.destroy();
         main.destroy();
     } catch (const std::exception& e) {

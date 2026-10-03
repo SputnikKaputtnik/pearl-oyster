@@ -38,6 +38,7 @@ if(SDL2_FOUND AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/renderer.cpp)
   add_library(oyster_render STATIC
     src/render/gl.cpp
     src/render/renderer.cpp
+    src/render/render_graph.cpp
   )
   target_link_libraries(oyster_render PUBLIC oyster_core)
   add_executable(oyster_viewer apps/viewer/main.cpp)
