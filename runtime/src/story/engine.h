@@ -148,8 +148,10 @@ struct InputState {
         if (!buttons[0] || oldLeft != buttons[0]) {
             moving = false;
         } else {
-            deltaX = mouseX - ox;
-            deltaY = mouseY - oy;
+            // Deliberate deviation (user decision 2026-10-03): the delta is inverted, so dragging
+            // turns the view like a first-person camera instead of the original's "grab the scene"
+            deltaX = ox - mouseX;
+            deltaY = oy - mouseY;
             moving = true;
         }
     }

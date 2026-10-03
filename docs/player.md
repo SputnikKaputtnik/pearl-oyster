@@ -67,7 +67,8 @@ Run it with a scratch directory as working directory: the story tries to write c
   the delta (window pixels, y down) is updated and `isMouseMoving` is true only while the left
   button is held in this and the previous frame; vectors are pushed as Vector2 tables. The story's
   `CameraRigController:getMouseQuat` turns left-drag into yaw/pitch (0.002 rad per pixel), as in
-  the original's desktop mode. Keyboard input is not fed (story.lua binds F5/F9 quicksave, R
+  the original's desktop mode, but with the delta inverted (user decision: first-person
+  feel instead of the original's "grab the scene"). Keyboard input is not fed (story.lua binds F5/F9 quicksave, R
   restart, C calibrate). Headless test: `OYSTER_DEBUG_DRAG=first,dx,dy`.
 
 ## Validation (fixed step 33.3333 ms, against run07a playblast)
