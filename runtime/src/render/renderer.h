@@ -47,6 +47,11 @@ struct RenderTarget {
     int width = 0, height = 0, samples = 1;
     bool implicitMsaa = false;  // EXT_multisampled_render_to_texture: resolve happens on store
     GLuint drawFbo() const { return msFbo ? msFbo : fbo; }
+    // For reading the finished image (glReadPixels, glBlitFramebuffer to the display): with
+    // EXT_multisampled_render_to_texture `fbo` is a multisampled framebuffer whose contents are
+    // undefined once the pass is stored, so reads go through a plain framebuffer on `color`.
+    GLuint readFbo() const { return plainFbo ? plainFbo : fbo; }
+    GLuint plainFbo = 0;
     void resolve() const;  // MSAA -> texture, glBlitFramebuffer(GL_NEAREST) as in the original
     void discardDepth() const;  // depth/stencil are not needed after the pass (tile GPUs: no store)
     void destroy();

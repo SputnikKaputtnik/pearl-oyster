@@ -7,6 +7,8 @@
 //   e.g. adb push oyster_selftest /data/local/tmp && adb shell /data/local/tmp/oyster_selftest /sdcard/Oyster/pearl 6000
 // GL runs on a render thread like in the app (render/gl_thread.h; OYSTER_THREADED=0: single
 // thread, glFinish after every frame). Threaded, the GPU may run two frames behind (fences).
+// OYSTER_DUMP=<first>[,<every>[,<count>]]: both eyes side by side as dump_<frame>.tga (frames
+// counted from the start of the measured run, i.e. after OYSTER_SKIP_TO).
 #include <EGL/egl.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -16,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <string>
 #include <vector>
@@ -107,6 +110,42 @@ int main(int argc, char** argv) {
         h.eye[0] = {-1.13f, 0.84f, 0.90f, -1.13f};
         h.eye[1] = {-0.84f, 1.13f, 0.90f, -1.13f};
         engine.renderer().setTextureBudget(size_t(1024) << 20);
+        int dumpFirst = -1, dumpEvery = 1, dumpCount = 1;
+        if (const char* d = std::getenv("OYSTER_DUMP")) std::sscanf(d, "%d,%d,%d", &dumpFirst, &dumpEvery, &dumpCount);
+        auto dumpEyes = [&](int frame) {
+            const RenderTarget* e0 = engine.eyeOutput(0);
+            const RenderTarget* e1 = engine.eyeOutput(1);
+            if (!e0 || !e1) {
+                std::printf("frame %d: no eye output to dump\n", frame);
+                return;
+            }
+            int w = e0->width, h = e0->height;
+            std::vector<uint8_t> px(static_cast<size_t>(w) * 2 * h * 4), eye(static_cast<size_t>(w) * h * 4);
+            for (int e = 0; e < 2; ++e) {
+                glBindFramebuffer(GL_FRAMEBUFFER, (e ? e1 : e0)->readFbo());
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, eye.data());
+                for (int y = 0; y < h; ++y)
+                    std::memcpy(&px[(static_cast<size_t>(y) * w * 2 + static_cast<size_t>(e) * w) * 4],
+                                &eye[static_cast<size_t>(y) * w * 4], static_cast<size_t>(w) * 4);
+            }
+            char name[64];
+            std::snprintf(name, sizeof(name), "dump_%05d.tga", frame);
+            if (std::FILE* f = std::fopen(name, "wb")) {  // TGA, 32 bit, bottom-up
+                uint8_t hdr[18] = {0, 0, 2};
+                int W = w * 2;
+                hdr[12] = static_cast<uint8_t>(W & 255);
+                hdr[13] = static_cast<uint8_t>(W >> 8);
+                hdr[14] = static_cast<uint8_t>(h & 255);
+                hdr[15] = static_cast<uint8_t>(h >> 8);
+                hdr[16] = 32;
+                hdr[17] = 8;
+                std::fwrite(hdr, 1, 18, f);
+                for (size_t q = 0; q < px.size(); q += 4) std::swap(px[q], px[q + 2]);  // RGBA -> BGRA
+                std::fwrite(px.data(), 1, px.size(), f);
+                std::fclose(f);
+            }
+        };
         engine.time().fixedStepMs = 1000.0 / hz;
         t0 = nowMs();
         if (!engine.boot()) throw std::runtime_error("story boot failed: " + engine.lua().lastError());
@@ -164,6 +203,9 @@ int main(int argc, char** argv) {
                     if (markFrames) std::fprintf(stderr, "render frame %d\n", i);
                 });
             if (!engine.frame(0)) std::printf("frame %d: Lua error\n", i);
+            if (dumpFirst >= 0 && i >= dumpFirst && (i - dumpFirst) % std::max(1, dumpEvery) == 0 &&
+                (i - dumpFirst) / std::max(1, dumpEvery) < dumpCount)
+                dumpEyes(i);
             double f1 = nowMs();
             gl::threaded::Stats tsAfter = gl::threaded::stats();
             double ms, cpuMs = f1 - f0, gpuWait;

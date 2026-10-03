@@ -287,7 +287,7 @@ print(s))lua", "=status");
                     std::vector<uint8_t> eyePx(static_cast<size_t>(w) * h * 4);
                     px.assign(static_cast<size_t>(w) * 2 * h * 4, 0);
                     for (int e = 0; e < 2; ++e) {
-                        glBindFramebuffer(GL_FRAMEBUFFER, (e ? e1 : e0)->fbo);
+                        glBindFramebuffer(GL_FRAMEBUFFER, (e ? e1 : e0)->readFbo());
                         glPixelStorei(GL_PACK_ALIGNMENT, 1);
                         glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, eyePx.data());
                         for (int y = 0; y < h; ++y)
@@ -301,9 +301,9 @@ print(s))lua", "=status");
                 if (args.window && e0 && e1) {
                     glDisable(GL_SCISSOR_TEST);
                     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e0->fbo);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e0->readFbo());
                     glBlitFramebuffer(0, 0, e0->width, e0->height, 0, 0, args.w / 2, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e1->fbo);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, e1->readFbo());
                     glBlitFramebuffer(0, 0, e1->width, e1->height, args.w / 2, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
                     gl::threaded::enqueue([win] { SDL_GL_SwapWindow(win); });
                 }
@@ -314,7 +314,7 @@ print(s))lua", "=status");
             const RenderTarget* out = engine.output();
             if (out && !args.out.empty() && f >= args.dumpFrom && (f - args.dumpFrom) % args.dumpEvery == 0) {
                 px.resize(static_cast<size_t>(out->width) * out->height * 4);
-                glBindFramebuffer(GL_FRAMEBUFFER, out->fbo);
+                glBindFramebuffer(GL_FRAMEBUFFER, out->readFbo());
                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
                 glReadPixels(0, 0, out->width, out->height, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
                 char name[1024];
@@ -323,7 +323,7 @@ print(s))lua", "=status");
             }
             if (args.window && out) {
                 glDisable(GL_SCISSOR_TEST);
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, out->fbo);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, out->readFbo());
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
                 glBlitFramebuffer(0, 0, out->width, out->height, 0, 0, args.w, args.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
                 gl::threaded::enqueue([win] { SDL_GL_SwapWindow(win); });

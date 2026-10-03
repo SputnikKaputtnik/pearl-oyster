@@ -80,6 +80,11 @@ msaa = 2                  # 1, 2 (the original's -msaa 2) or 4
 eye_height_offset = 0.30  # not in the original: eye cameras raised by this many metres (0 = original)
 ```
 
+Debugging keys: `skip_to = <story state>` fast-forwards to that state after the start (story
+frames without rendering, the mixer runs silently along so the sound stays in sync, a panel
+counts the skipped seconds), `debug_log = on` logs every frame (story state, eye targets,
+xrEndFrame result) to logcat. Story state transitions are always logged.
+
 While the story plays, controller button **A** (right) or **X** (left) switches the animation
 between original and interpolated; a panel shows the new mode for two seconds. The thumbsticks
 (up/down) raise or lower the eye cameras in 5 cm steps (saved in oyster.cfg). This is a deviation

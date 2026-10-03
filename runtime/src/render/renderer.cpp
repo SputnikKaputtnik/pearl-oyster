@@ -75,6 +75,7 @@ void RenderTarget::destroy() {
     if (color) glDeleteTextures(1, &color);
     if (depth) glDeleteRenderbuffers(1, &depth);
     if (msFbo) glDeleteFramebuffers(1, &msFbo);
+    if (plainFbo) glDeleteFramebuffers(1, &plainFbo);
     if (msColor) glDeleteRenderbuffers(1, &msColor);
     if (msDepth) glDeleteRenderbuffers(1, &msDepth);
     *this = RenderTarget();
@@ -132,6 +133,11 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth);
         }
         checkFramebuffer("MSRTT framebuffer");
+        glGenFramebuffers(1, &t.plainFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, t.plainFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0);
+        checkFramebuffer("MSRTT read framebuffer");
+        glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
         return t;
     }
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0);

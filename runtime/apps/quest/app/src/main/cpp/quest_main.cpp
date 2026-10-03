@@ -152,6 +152,14 @@ struct App {
     int heightStick = 0;  // -1 / 0 / +1: last stick zone (one step per push)
     std::string notice;       // shown on a head-locked panel for a moment
     XrTime noticeUntil = 0;
+    // debugging (oyster.cfg): skip_to = <story state> fast-forwards there after the start
+    // (without rendering, sound off); debug_log = on logs every frame from then on
+    std::string skipTo;
+    int skipFrames = 0;
+    bool debugLog = false;
+    size_t logShown = 0;      // story log lines already scanned for state transitions
+    std::string storyState;
+    bool exitLogged = false;
 };
 
 // Pearl data: shared storage /sdcard/Oyster/pearl (adb-pushed, needs "all files access"), else
@@ -300,6 +308,8 @@ void loadConfig(App& a) {
             if (k == "resolution_scale") a.resolutionScale = std::max(0.5f, std::min(2.0f, std::strtof(v.c_str(), nullptr)));
             else if (k == "animation") a.interpolate = v == "interpolated";
             else if (k == "msaa") a.msaa = std::max(1, std::min(4, std::atoi(v.c_str())));
+            else if (k == "skip_to") a.skipTo = v;
+            else if (k == "debug_log") a.debugLog = v == "on" || v == "1";
             else if (k == "eye_height_offset") a.eyeRaise = std::max(-1.0f, std::min(1.0f, std::strtof(v.c_str(), nullptr)));
         }
         std::fclose(f);
@@ -501,7 +511,7 @@ const uint8_t* glyph(char c) {
         {'7', {31, 1, 2, 4, 8, 8, 8}},       {'8', {14, 17, 17, 14, 17, 17, 14}}, {'9', {14, 17, 17, 15, 1, 2, 12}},
         {'%', {25, 26, 2, 4, 8, 11, 19}},    {'.', {0, 0, 0, 0, 0, 12, 12}},   {'T', {31, 4, 4, 4, 4, 4, 4}},
         {'F', {31, 16, 16, 30, 16, 16, 16}}, {'U', {17, 17, 17, 17, 17, 17, 14}}, {'X', {17, 17, 10, 4, 10, 17, 17}},
-        {'Y', {17, 17, 10, 4, 4, 4, 4}},     {'+', {0, 4, 4, 31, 4, 4, 0}},       {'-', {0, 0, 0, 31, 0, 0, 0}},
+        {'Y', {17, 17, 10, 4, 4, 4, 4}},     {'K', {17, 18, 20, 24, 20, 18, 17}},     {'+', {0, 4, 4, 31, 4, 4, 0}},       {'-', {0, 0, 0, 31, 0, 0, 0}},
     };
     for (const auto& g : font)
         if (g.c == c) return g.rows;
@@ -708,6 +718,9 @@ struct FrameOut {
     GLuint srcFbo[2] = {};
     int srcW[2] = {}, srcH[2] = {};
     std::string notice;  // head-locked panel text (empty: none)
+    bool shouldRender = false, focused = false;
+    std::string state;  // story state (debug log)
+    uint64_t frame = 0;
 };
 
 // Render thread: eye images into the swapchains, then xrEndFrame.
@@ -719,8 +732,8 @@ void submitFrame(App& a, const FrameOut& o) {
                                              {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    const XrCompositionLayerBaseHeader* layers[] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer),
-                                                    reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad)};
+    const XrCompositionLayerBaseHeader* layers[2] = {};
+    uint32_t layerCount = 0;
     if (o.render) {
         for (int e = 0; e < 2; ++e) {
             Swapchain& s = a.swapchains[e];
@@ -748,21 +761,48 @@ void submitFrame(App& a, const FrameOut& o) {
         layer.space = a.space;
         layer.viewCount = 2;
         layer.views = pv;
-        ei.layerCount = 1;
-        ei.layers = layers;
-        if (!o.notice.empty() && a.overlay.handle && a.viewSpace) {
-            drawOverlay(a, o.notice.c_str(), -1.0f);
-            quad.space = a.viewSpace;
-            quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-            quad.subImage.swapchain = a.overlay.handle;
-            quad.subImage.imageRect.extent = {a.overlay.width, a.overlay.height};
-            quad.pose.orientation.w = 1;
-            quad.pose.position = {0.0f, -0.25f, -1.5f};
-            quad.size = {0.8f, 0.2f};
-            ei.layerCount = 2;
+        layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer);
+    }
+    if (!o.notice.empty() && a.overlay.handle && a.viewSpace) {
+        drawOverlay(a, o.notice.c_str(), -1.0f);
+        quad.space = a.viewSpace;
+        quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        quad.subImage.swapchain = a.overlay.handle;
+        quad.subImage.imageRect.extent = {a.overlay.width, a.overlay.height};
+        quad.pose.orientation.w = 1;
+        quad.pose.position = {0.0f, -0.25f, -1.5f};
+        quad.size = {0.8f, 0.2f};
+        layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
+    }
+    ei.layerCount = layerCount;
+    ei.layers = layerCount ? layers : nullptr;
+    XrResult r = xrEndFrame(a.session, &ei);
+    if (XR_FAILED(r) || a.debugLog)
+        LOGI("frame %llu [%s] shouldRender %d focused %d render %d src %u/%u %dx%d layers %u notice '%s' -> xrEndFrame %d",
+             static_cast<unsigned long long>(o.frame), o.state.c_str(), o.shouldRender, o.focused, o.render, o.srcFbo[0],
+             o.srcFbo[1], o.srcW[0], o.srcH[0], layerCount, o.notice.c_str(), static_cast<int>(r));
+}
+
+// Story state transitions from the FSM log ("[old]->[new]") into logcat; reaching skip_to ends the
+// fast-forward.
+void trackStory(App& a) {
+    const auto& log = a.engine->lua().log;
+    for (; a.logShown < log.size(); ++a.logShown) {
+        const std::string& l = log[a.logShown];
+        size_t arrow = l.find("]->[");
+        if (arrow == std::string::npos) continue;
+        size_t end = l.find(']', arrow + 4);
+        if (end == std::string::npos) continue;
+        std::string dest = l.substr(arrow + 4, end - arrow - 4);
+        if (dest.rfind("AudioTest", 0) == 0 || dest == "Preload") continue;
+        a.storyState = dest;
+        LOGI("story state %s (frame %llu, story time %.2f s)", dest.c_str(), static_cast<unsigned long long>(a.frames),
+             static_cast<double>(a.engine->time().elapsedUs) * 1e-6);
+        if (!a.skipTo.empty() && dest == a.skipTo) {
+            LOGI("skip_to %s reached after %d story frames", dest.c_str(), a.skipFrames);
+            a.skipTo.clear();
         }
     }
-    xrEndFrame(a.session, &ei);
 }
 
 // Frame with the render thread: the engine thread waits for the frame slot, begins the frame on
@@ -781,6 +821,36 @@ void frameThreaded(App& a) {
     auto out = std::make_shared<FrameOut>();
     out->displayTime = fs.predictedDisplayTime;
     bool focused = a.state == XR_SESSION_STATE_FOCUSED;
+    out->shouldRender = fs.shouldRender;
+    out->focused = focused;
+    out->frame = a.frames;
+    if (a.engine && !a.skipTo.empty()) {
+        // debug fast-forward (skip_to): story frames without rendering, ~10 ms per display frame
+        setAudio(a, false);
+        a.engine->skipRender = true;
+        auto t0 = std::chrono::steady_clock::now();
+        while (!a.skipTo.empty() && !a.engine->exitRequested &&
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() < 10.0) {
+            a.engine->frame(1.0 / 72.0);
+            // the mixer advances with the story (silently), so sounds stay in sync
+            static std::vector<int16_t> scratch;
+            uint32_t n = audio::Engine::kRate / 72;
+            scratch.resize(static_cast<size_t>(n) * 2);
+            a.engine->audio().render(scratch.data(), n);
+            ++a.skipFrames;
+            trackStory(a);
+        }
+        a.engine->skipRender = false;
+        char text[48];
+        std::snprintf(text, sizeof(text), "SKIPPING %d", a.skipFrames / 72);
+        out->notice = text;
+        out->state = a.storyState;
+        App* ap = &a;
+        gl::threaded::enqueue([ap, out] { submitFrame(*ap, *out); });
+        gl::threaded::endFrame(1);
+        a.lastDisplayTime = 0;  // no jump in story time when real playback starts
+        return;
+    }
     setAudio(a, focused && a.engine);
     if (focused) pollActions(a, fs.predictedDisplayTime);
     if (fs.predictedDisplayTime < a.noticeUntil) out->notice = a.notice;
@@ -797,9 +867,15 @@ void frameThreaded(App& a) {
             auto tf0 = std::chrono::steady_clock::now();
             if (!a.engine->frame(dt)) LOGE("frame %llu: Lua error", static_cast<unsigned long long>(a.frames));
             frameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf0).count();
+            trackStory(a);
+            out->state = a.storyState;
+            if (a.engine->exitRequested && !a.exitLogged) {
+                a.exitLogged = true;
+                LOGI("story requested exit (frame %llu): finishing the activity", static_cast<unsigned long long>(a.frames));
+            }
             for (int e = 0; e < 2; ++e)
                 if (const RenderTarget* src = a.engine->eyeOutput(e)) {
-                    out->srcFbo[e] = src->fbo;
+                    out->srcFbo[e] = src->readFbo();
                     out->srcW[e] = src->width;
                     out->srcH[e] = src->height;
                 }
@@ -946,7 +1022,7 @@ void frame(App& a) {
                 if (a.srgbWriteControl) glDisable(GL_FRAMEBUFFER_SRGB_EXT);
                 glDisable(GL_SCISSOR_TEST);  // blits honour the scissor test
                 if (src) {
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, src->fbo);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, src->readFbo());
                     glBlitFramebuffer(0, 0, src->width, src->height, 0, 0, s.width, s.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
                 }
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
