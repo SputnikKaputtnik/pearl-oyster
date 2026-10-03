@@ -152,11 +152,14 @@ int main(int argc, char** argv) {
         for (int i = 0; i < frames && !engine.exitRequested; ++i) {
             size_t loads = rr.texLoads;
             double tex = rr.texReadMs + rr.texDecodeMs + rr.texUploadMs;
+            double texR = rr.texReadMs, texU = rr.texUploadMs;
+            gl::threaded::Stats tsBefore = gl::threaded::stats();
             double f0 = nowMs();
             RenderStat* rs = &rstat[static_cast<size_t>(i)];
             if (threaded) gl::threaded::enqueue([rs] { rs->start = nowMs(); });
             if (!engine.frame(0)) std::printf("frame %d: Lua error\n", i);
             double f1 = nowMs();
+            gl::threaded::Stats tsAfter = gl::threaded::stats();
             double ms, cpuMs = f1 - f0, gpuWait;
             if (threaded) {
                 // end of frame on the render thread: fence; keep at most two frames on the GPU
@@ -204,8 +207,11 @@ int main(int argc, char** argv) {
                 states.back().name = dest;
             }
             if (ms > 2 * budget)
-                std::printf("slow frame %d: %.1f ms (%zu texture loads %.1f ms)\n", i, ms, rr.texLoads - loads,
-                            rr.texReadMs + rr.texDecodeMs + rr.texUploadMs - tex);
+                std::printf("slow frame %d: %.1f ms, engine thread %.1f ms (%zu texture loads %.1f ms: read %.1f, upload "
+                            "%.1f; waited for the render thread %.1f ms in %llu sync calls)\n",
+                            i, ms, cpuMs, rr.texLoads - loads, rr.texReadMs + rr.texDecodeMs + rr.texUploadMs - tex,
+                            rr.texReadMs - texR, rr.texUploadMs - texU, tsAfter.waitMs - tsBefore.waitMs,
+                            static_cast<unsigned long long>(tsAfter.syncCalls - tsBefore.syncCalls));
             sum += ms;
             all += ms;
             mx = std::max(mx, ms);

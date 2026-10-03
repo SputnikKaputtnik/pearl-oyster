@@ -28,6 +28,7 @@ void Prefetcher::request(Kind kind, const std::string& uriIn) {
         auto e = std::make_shared<Entry>();
         e->kind = kind;
         e->uri = uri;
+        e->raw = uriIn;
         entries_[key] = e;
         queue_.push_back(e);
     }
@@ -54,6 +55,15 @@ size_t Prefetcher::pending() const {
     size_t n = 0;
     for (const auto& kv : entries_) n += kv.second->done ? 0 : 1;
     return n;
+}
+
+void Prefetcher::readyFiles(std::vector<std::string>& out, size_t max) const {
+    std::lock_guard<std::mutex> lock(m_);
+    for (const auto& kv : entries_) {
+        if (out.size() >= max) break;
+        const Entry& e = *kv.second;
+        if (e.kind == Kind::File && e.done && !e.failed) out.push_back(e.raw);
+    }
 }
 
 std::shared_ptr<Prefetcher::Entry> Prefetcher::takeEntry(Kind kind, const std::string& uriIn) {

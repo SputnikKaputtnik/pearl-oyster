@@ -75,6 +75,7 @@ public:
                    const ModelInstance* anim);
 
     GLuint texture(const std::string& uri);
+    bool hasTexture(const std::string& uri) const { return textures_.count(uri) != 0; }
     // optional source of texture file bytes that were read ahead (story::Prefetcher)
     std::function<bool(const std::string&, std::vector<uint8_t>&)> fileSource;
     // Texture memory: every texture remembers the frame it was last bound in. With a budget

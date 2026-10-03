@@ -1,5 +1,7 @@
 #include "render/renderer.h"
 
+#include "render/gl_thread.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -8,6 +10,18 @@
 #include <cstring>
 
 namespace oyster {
+
+namespace {
+// Completeness of the bound framebuffer; on the render thread when it is active (a query from
+// the engine thread would wait for it).
+void checkFramebuffer(const char* what) {
+    auto check = [what] {
+        if (gl::glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "%s incomplete\n", what);
+    };
+    if (gl::threaded::active()) gl::threaded::enqueue(check);
+    else check();
+}
+}  // namespace
 
 namespace {
 double cpuMs() {
@@ -117,7 +131,7 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
             glRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, w, h);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth);
         }
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "MSRTT framebuffer incomplete\n");
+        checkFramebuffer("MSRTT framebuffer");
         return t;
     }
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.color, 0);
@@ -127,7 +141,7 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.depth);
     }
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "framebuffer incomplete\n");
+    checkFramebuffer("framebuffer");
     if (samples > 1) {
         glGenFramebuffers(1, &t.msFbo);
         glBindFramebuffer(GL_FRAMEBUFFER, t.msFbo);
@@ -141,7 +155,7 @@ RenderTarget createRenderTarget(int w, int h, bool depth, int samples) {
             glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, w, h);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.msDepth);
         }
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) std::fprintf(stderr, "MSAA framebuffer incomplete\n");
+        checkFramebuffer("MSAA framebuffer");
     }
     return t;
 }
@@ -286,7 +300,14 @@ GLuint Renderer::texture(const std::string& uri) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        if (glGetError() != GL_NO_ERROR) warnOnce("GL error uploading " + uri);
+        if (gl::threaded::active()) {
+            // checked on the render thread: a query from here would wait for it every texture
+            gl::threaded::enqueue([uri] {
+                if (glGetError() != GL_NO_ERROR) std::fprintf(stderr, "warning: GL error uploading %s\n", uri.c_str());
+            });
+        } else if (glGetError() != GL_NO_ERROR) {
+            warnOnce("GL error uploading " + uri);
+        }
         texUploadMs += cpuMs() - tl0;
     } catch (const std::exception& e) {
         warnOnce(std::string("texture ") + uri + ": " + e.what());

@@ -255,6 +255,7 @@ bool Engine::frame(double dtSeconds) {
     bool ok = lua_->callApplication("onUpdate");
     if (timingOn()) gPhases[0].total += nowMs() - t0 - (gPhases[1].total + gPhases[2].total - sceneBefore);
     ok = lua_->callApplication("onRender") && ok;
+    if (!skipRender) preloadTextures();
     ++frameIndex;
     if (timingOn()) {
         double total = nowMs() - frameStart;
@@ -284,6 +285,27 @@ bool Engine::frame(double dtSeconds) {
         renderer_->prepareMs = renderer_->executeMs = 0;
     }
     return ok;
+}
+
+// Textures of the models the prefetcher has read for coming states go to the GPU a few per frame
+// before they are needed, instead of all at once in the first frame of the next shot (the
+// render thread would spend tens of milliseconds in the driver there). Same data, same result.
+void Engine::preloadTextures() {
+    constexpr size_t kPerFrame = 3;
+    constexpr double kBudgetMs = 2.0;
+    std::vector<std::string> ready;
+    prefetch_->readyFiles(ready, 64);
+    double t0 = nowMs();
+    size_t n = 0;
+    for (const std::string& uri : ready) {
+        if (renderer_->hasTexture(uri)) {
+            prefetch_->drop(Prefetcher::Kind::File, uri);  // loaded meanwhile from disk
+            continue;
+        }
+        renderer_->texture(uri);
+        ++texturesPreloaded;
+        if (++n >= kPerFrame || nowMs() - t0 > kBudgetMs) break;
+    }
 }
 
 SGNode* Engine::addNode(SceneObj* scene, SGNode* node, const std::string& name) {

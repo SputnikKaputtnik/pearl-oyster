@@ -39,6 +39,8 @@ public:
     bool takeFile(const std::string& uri, std::vector<uint8_t>& bytes);
 
     size_t pending() const;
+    // Texture files read ahead and not taken yet (URIs as requested), at most `max`.
+    void readyFiles(std::vector<std::string>& out, size_t max) const;
     void expire(double maxAgeSeconds);  // forget finished results nobody took
     double waitedMs = 0;  // main-thread time spent waiting for unfinished loads
 
@@ -46,6 +48,7 @@ private:
     struct Entry {
         Kind kind;
         std::string uri;
+        std::string raw;  // as first requested (material URIs, e.g. "pearl:textures/x.dds")
         bool done = false, failed = false;
         std::chrono::steady_clock::time_point doneAt;
         std::shared_ptr<ModelResource> model;

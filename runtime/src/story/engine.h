@@ -249,7 +249,9 @@ public:
     std::vector<std::string> fsmNames;
     uint64_t frameIndex = 0;
     bool exitRequested = false;  // System.exit
-    bool skipRender = false;     // test harnesses: run the story without drawing (fast-forward)
+    bool skipRender = false;
+    size_t texturesPreloaded = 0;  // uploaded ahead of use (preloadTextures)
+    void preloadTextures();     // test harnesses: run the story without drawing (fast-forward)
 
 private:
     void bindAll();
