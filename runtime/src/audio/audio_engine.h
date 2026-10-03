@@ -10,6 +10,7 @@
 //    listener's yaw/pitch, decode to 4 virtual speakers (mid/side), BiquadBinauralFilter per
 //    speaker (delay + 2x6 biquads from the .mxhrtf), L = M+S, R = M-S.
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -24,10 +25,15 @@ struct PcmClip {
     int channels = 0;
     int rate = 0;
     uint32_t frames = 0;
-    std::vector<int16_t> data;  // interleaved
+    std::vector<int16_t> data;  // interleaved, frames * channels
+    // Streaming decode: frames [0, ready) are decoded, a background thread fills the rest (far
+    // faster than real time). Readers wait for the frames they use (waitReady).
+    std::atomic<uint32_t> ready{0};
+    void waitReady(uint32_t end) const;
 };
-// Decodes an Ogg Vorbis file to int16 (throws on error).
-std::shared_ptr<PcmClip> decodeVorbis(const std::vector<uint8_t>& file);
+// Decodes an Ogg Vorbis file to int16 (throws on error): the first seconds before returning,
+// the rest on a background thread (PcmClip::ready). The samples equal a complete decode.
+std::shared_ptr<PcmClip> decodeVorbis(std::vector<uint8_t> file);
 
 class Engine {
 public:

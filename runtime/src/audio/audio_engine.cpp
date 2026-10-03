@@ -4,7 +4,15 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <condition_variable>
+#include <cstdio>
+#include <deque>
 #include <stdexcept>
+#include <thread>
+#if defined(__ANDROID__) || defined(__linux__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 #include <vorbis/vorbisfile.h>
 
@@ -80,44 +88,131 @@ Vec3 listenerForward(const Quat& q) {
 
 }  // namespace
 
-std::shared_ptr<PcmClip> decodeVorbis(const std::vector<uint8_t>& file) {
-    struct Mem { const std::vector<uint8_t>* d; size_t pos; } mem{&file, 0};
+void PcmClip::waitReady(uint32_t end) const {
+    while (ready.load(std::memory_order_acquire) < std::min(end, frames)) std::this_thread::yield();
+}
+
+namespace {
+struct VorbisStream {
+    std::vector<uint8_t> file;
+    size_t pos = 0;
+    OggVorbis_File vf;
+    bool open = false;
+    ~VorbisStream() {
+        if (open) ov_clear(&vf);
+    }
+};
+
+// Decodes into clip.data from frame clip.ready on, until `untilFrames` (or the end).
+void decodeSome(VorbisStream& s, PcmClip& clip, uint32_t untilFrames) {
+    char buf[16384];
+    int section = 0;
+    size_t ch = static_cast<size_t>(clip.channels);
+    uint32_t at = clip.ready.load(std::memory_order_relaxed);
+    while (at < untilFrames) {
+        long n = ov_read(&s.vf, buf, sizeof(buf), 0, 2, 1, &section);
+        if (n <= 0) {
+            if (at != clip.frames)
+                std::fprintf(stderr, "audio: stream ended at frame %u of %u (header length)\n", at, clip.frames);
+            clip.ready.store(clip.frames, std::memory_order_release);  // the rest stays silent
+            return;
+        }
+        uint32_t got = static_cast<uint32_t>(static_cast<size_t>(n) / 2 / ch);
+        if (at + got > clip.frames) {
+            std::fprintf(stderr, "audio: stream longer than its header length %u\n", clip.frames);
+            got = clip.frames - at;
+        }
+        std::memcpy(clip.data.data() + static_cast<size_t>(at) * ch, buf, static_cast<size_t>(got) * ch * 2);
+        at += got;
+        clip.ready.store(at, std::memory_order_release);
+    }
+}
+// One low-priority background decoder for all clips, round robin in quarter-second chunks, so
+// every clip stays far ahead of its playback while the engine and render threads keep their cores.
+class BackgroundDecoder {
+public:
+    static BackgroundDecoder& get() {
+        static BackgroundDecoder* d = new BackgroundDecoder;  // never destroyed: the thread is detached
+        return *d;
+    }
+    void add(std::shared_ptr<VorbisStream> s, std::shared_ptr<PcmClip> c) {
+        {
+            std::lock_guard<std::mutex> l(m_);
+            jobs_.push_back({std::move(s), std::move(c)});
+        }
+        cv_.notify_one();
+    }
+
+private:
+    struct Job {
+        std::shared_ptr<VorbisStream> s;
+        std::shared_ptr<PcmClip> c;
+    };
+    BackgroundDecoder() {
+        std::thread([this] { run(); }).detach();
+    }
+    void run() {
+#if defined(__ANDROID__) || defined(__linux__)
+        setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 10);
+#endif
+        for (;;) {
+            Job j;
+            {
+                std::unique_lock<std::mutex> l(m_);
+                cv_.wait(l, [&] { return !jobs_.empty(); });
+                j = std::move(jobs_.front());
+                jobs_.pop_front();
+            }
+            PcmClip& c = *j.c;
+            uint32_t until = std::min<uint64_t>(c.frames, static_cast<uint64_t>(c.ready.load()) + static_cast<uint64_t>(c.rate) / 4);
+            decodeSome(*j.s, c, until);
+            if (c.ready.load() < c.frames) {
+                std::lock_guard<std::mutex> l(m_);
+                jobs_.push_back(std::move(j));
+            }
+        }
+    }
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<Job> jobs_;
+};
+}  // namespace
+
+std::shared_ptr<PcmClip> decodeVorbis(std::vector<uint8_t> fileIn) {
+    auto s = std::make_shared<VorbisStream>();
+    s->file = std::move(fileIn);
     ov_callbacks cb;
     cb.read_func = [](void* ptr, size_t size, size_t n, void* src) -> size_t {
-        auto* m = static_cast<Mem*>(src);
-        size_t want = size * n, left = m->d->size() - m->pos;
+        auto* m = static_cast<VorbisStream*>(src);
+        size_t want = size * n, left = m->file.size() - m->pos;
         size_t take = std::min(want, left);
-        std::memcpy(ptr, m->d->data() + m->pos, take);
+        std::memcpy(ptr, m->file.data() + m->pos, take);
         m->pos += take;
         return size ? take / size : 0;
     };
     cb.seek_func = [](void* src, ogg_int64_t off, int whence) -> int {
-        auto* m = static_cast<Mem*>(src);
-        int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(m->pos) : static_cast<int64_t>(m->d->size());
+        auto* m = static_cast<VorbisStream*>(src);
+        int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? static_cast<int64_t>(m->pos) : static_cast<int64_t>(m->file.size());
         int64_t p = base + off;
-        if (p < 0 || p > static_cast<int64_t>(m->d->size())) return -1;
+        if (p < 0 || p > static_cast<int64_t>(m->file.size())) return -1;
         m->pos = static_cast<size_t>(p);
         return 0;
     };
     cb.close_func = nullptr;
-    cb.tell_func = [](void* src) -> long { return static_cast<long>(static_cast<Mem*>(src)->pos); };
-    OggVorbis_File vf;
-    if (ov_open_callbacks(&mem, &vf, nullptr, 0, cb) != 0) throw std::runtime_error("not an Ogg Vorbis stream");
-    vorbis_info* vi = ov_info(&vf, -1);
+    cb.tell_func = [](void* src) -> long { return static_cast<long>(static_cast<VorbisStream*>(src)->pos); };
+    if (ov_open_callbacks(s.get(), &s->vf, nullptr, 0, cb) != 0) throw std::runtime_error("not an Ogg Vorbis stream");
+    s->open = true;
+    vorbis_info* vi = ov_info(&s->vf, -1);
+    ogg_int64_t total = ov_pcm_total(&s->vf, -1);
+    if (vi->channels <= 0 || total < 0) throw std::runtime_error("Ogg Vorbis stream without length");
     auto clip = std::make_shared<PcmClip>();
     clip->channels = vi->channels;
     clip->rate = static_cast<int>(vi->rate);
-    char buf[16384];
-    int section = 0;
-    for (;;) {
-        long n = ov_read(&vf, buf, sizeof(buf), 0, 2, 1, &section);
-        if (n <= 0) break;
-        size_t old = clip->data.size();
-        clip->data.resize(old + static_cast<size_t>(n) / 2);
-        std::memcpy(clip->data.data() + old, buf, static_cast<size_t>(n));
-    }
-    ov_clear(&vf);
-    clip->frames = static_cast<uint32_t>(clip->data.size() / static_cast<size_t>(clip->channels));
+    clip->frames = static_cast<uint32_t>(total);
+    clip->data.assign(static_cast<size_t>(clip->frames) * static_cast<size_t>(clip->channels), 0);
+    // half a second now (a few ms of work), the rest in the background
+    decodeSome(*s, *clip, std::min<uint32_t>(clip->frames, static_cast<uint32_t>(clip->rate) / 2));
+    if (clip->ready.load() < clip->frames) BackgroundDecoder::get().add(s, clip);
     return clip;
 }
 
@@ -604,6 +699,7 @@ void Engine::renderBlock(int16_t* out) {
                 }
             }
             uint32_t n = std::min(kBlock - mixed, c.frames - p.pos);
+            c.waitReady(p.pos + n);
             const int16_t* src = c.data.data() + static_cast<size_t>(p.pos) * static_cast<size_t>(c.channels);
             int16_t* d = dst + static_cast<size_t>(mixed) * (em && em->type == 3 ? 4 : 2);
             if (c.channels == 1) mixMono(n, src, d, p.vol, p.volStep, p.pan, p.panStep);
