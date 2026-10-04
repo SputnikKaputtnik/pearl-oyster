@@ -14,7 +14,16 @@ US).
 Download the latest [release](https://github.com/SputnikKaputtnik/pearl-oyster/releases), unpack
 it, connect the Quest by USB (developer mode) and double-click `Install Pearl on Quest.cmd`. The
 installer finds your Steam copy, verifies it, copies it to the headset and installs the app.
-Details and settings: [runtime/apps/quest/README.md](runtime/apps/quest/README.md).
+
+Controls while the film plays (Touch controllers):
+
+| Control | Effect |
+|---|---|
+| **A** (right) / **X** (left) | animation: original (stepped keys, as authored) or interpolated |
+| thumbstick up / down | eye height in 5 cm steps (default +30 cm; not in the original, 0 = original) |
+
+Settings (resolution, MSAA, defaults of the above) are in `/sdcard/Oyster/oyster.cfg` on the
+headset. Details: [runtime/apps/quest/README.md](runtime/apps/quest/README.md).
 
 ## Status
 
