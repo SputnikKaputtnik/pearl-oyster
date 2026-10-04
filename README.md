@@ -11,8 +11,8 @@ the **Academy Award for Best Animated Short Film**, the first VR film ever to be
 Oscar.
 
 It was made to be watched from the passenger seat. Its VR version, though, only runs on a
-Windows PC with SteamVR - not on the standalone headsets most people use today - and its Steam
-page is not visible in every country. Project Oyster keeps that seat open: Pearl's own story, animation, shaders and music,
+Windows PC with SteamVR - not on the standalone headsets most people use today. Project Oyster
+keeps that seat open: Pearl's own story, animation, shaders and music,
 running natively on a modern standalone headset (Meta Quest 3, OpenXR). Preserved, not remade.
 
 * **The original film, unchanged:** Pearl's own Lua story scripts run in our engine (LuaJIT),
