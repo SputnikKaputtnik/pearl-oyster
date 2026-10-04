@@ -17,35 +17,35 @@ $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 .\gradlew.bat --no-daemon --offline :app:assembleDebug
 ```
 
-Output: `app/build/outputs/apk/debug/app-debug.apk`.
+Output: `app/build/outputs/apk/debug/app-debug.apk`. Release (signed with a key kept outside the
+repository): `:app:assembleRelease -PoysterKeystore=<keystore.properties>`, then
+`python tools/make_quest_release.py <version> <apk> <out>` builds the installer package.
 
-## Data (the user's own installation)
+## Install (release package)
 
-The APK contains no Pearl assets. An offline installer step prepares your installation for
-the headset: `oyster_prepare` (desktop build of the runtime, `apps/prepare`) copies the four
-content folders (`common`, `pearl_vrcam`, `pearlpackage`, `story`) and converts every DXT5
-texture - which the Quest GPU cannot sample - into an uncompressed RGBA8 DDS of the same name,
-using the runtime's decoder (pixel-identical to the desktop GPU). The source is only read.
-Result: about 4.6 GB, about 6 s on a desktop.
+`Install Pearl on Quest.cmd` (installer/install.ps1) finds Pearl in the Steam libraries (or asks
+for the folder), checks the 4474 files the app reads against the build 1340090 manifest (sizes;
+`-VerifyHashes` for SHA-256), copies `common`, `pearl_vrcam`, `pearlpackage` and `story` to
+`/sdcard/Oyster/pearl` (`adb push --sync`, about 2.2 GB), installs the APK and grants it
+`MANAGE_EXTERNAL_STORAGE` (`appops`). The APK contains no Pearl assets; DXT5 textures are used as
+they are (the Quest GPU decodes S3TC).
+
+Manually:
 
 ```powershell
-oyster_prepare --root "<Pearl installation>" --out "<folder>"
-adb shell mkdir -p /sdcard/Android/data/org.oyster.pearl/files/pearl
-adb push "<folder>/." /sdcard/Android/data/org.oyster.pearl/files/pearl/
+adb shell mkdir -p /sdcard/Oyster/pearl
+adb push "<Pearl>\common" "<Pearl>\pearl_vrcam" "<Pearl>\pearlpackage" "<Pearl>\story" /sdcard/Oyster/pearl/
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+adb shell appops set --uid org.oyster.pearl MANAGE_EXTERNAL_STORAGE allow
 ```
 
-Unprepared data still works (textures are then decoded while loading, with a warning in the
-log), but costs CPU time during the story.
-
-Checkpoint saves are written to `/sdcard/Android/data/org.oyster.pearl/files/saves/`.
+The `appops` grant is needed again after every reinstall. Checkpoint saves and the shader cache
+are written to the app's own directory (`/sdcard/Android/data/org.oyster.pearl/files/`).
 
 ## Run
 
-```powershell
-adb install -r app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -n org.oyster.pearl/android.app.NativeActivity
-adb logcat -s OysterPearl OysterEngine
-```
+Library > Unknown Sources > "Oyster - Pearl", or `adb shell am start -n
+org.oyster.pearl/android.app.NativeActivity`; log: `adb logcat -s OysterPearl OysterEngine`.
 
 Pearl waits for a seated viewer (camera height between 80 and 130 units, i.e. a seated head
 height); the tracking origin is the floor (LOCAL_FLOOR).

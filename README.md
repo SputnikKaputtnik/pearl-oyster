@@ -4,12 +4,25 @@ Preservation and native-porting research for *Google Spotlight Stories: Pearl* (
 real-time VR animated short). Long-term goal: run Pearl faithfully and natively on modern
 standalone headsets (Meta Quest 3, OpenXR), without remaking it.
 
-This repository contains **only our own tools, manifests (hashes) and documentation** — no
-Pearl assets or binaries. Bring your own legally obtained installation (Steam AppID 476540).
+This repository contains **only our own code, tools, manifests (hashes) and documentation** — no
+Pearl assets or binaries. Bring your own legally obtained installation (Steam AppID 476540; the
+store page is gone, owners can still install it from their library).
+
+## Play it on Meta Quest 3
+
+Download the latest [release](https://github.com/SputnikKaputtnik/pearl-oyster/releases), unpack
+it, connect the Quest by USB (developer mode) and double-click `Install Pearl on Quest.cmd`. The
+installer finds your Steam copy, verifies it, copies it to the headset and installs the app.
+Details and settings: [runtime/apps/quest/README.md](runtime/apps/quest/README.md).
 
 ## Status
 
-Phase 1 (forensics) — complete for the Steam build 1340090.
+* Phase 1 (forensics) — complete for the Steam build 1340090.
+* Phase 2 (own runtime) — the original Lua story plays the whole film in our engine
+  ([docs/player.md](docs/player.md)): desktop player (frame-exact against captures of the
+  original) and a native Quest 3 app (OpenXR, [docs/vr.md](docs/vr.md)), 72 Hz.
+
+License: MIT ([LICENSE](LICENSE)); third-party components: [THIRD_PARTY.md](THIRD_PARTY.md).
 
 | Document | Contents |
 |---|---|

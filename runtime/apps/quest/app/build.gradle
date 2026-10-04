@@ -7,6 +7,13 @@ plugins {
 // the user copies their own installation to the app's external files directory (README.md).
 def openxrRoot = 'C:/OpenXR/install/android-arm64-v8a'
 
+// Release signing: a keystore.properties (storeFile, storePassword, keyAlias, keyPassword) outside
+// the repository, path from -PoysterKeystore=... or OYSTER_KEYSTORE; without it the release build
+// stays unsigned.
+def keystoreFile = project.findProperty('oysterKeystore') ?: System.getenv('OYSTER_KEYSTORE')
+def keystoreProps = new Properties()
+if (keystoreFile && file(keystoreFile).exists()) file(keystoreFile).withInputStream { keystoreProps.load(it) }
+
 android {
     namespace 'org.oyster.pearl'
     compileSdk 35
@@ -17,7 +24,7 @@ android {
         minSdk 32
         targetSdk 35
         versionCode 1
-        versionName '0.1.0-dev'
+        versionName '0.1.0'
 
         ndk {
             abiFilters 'arm64-v8a'
@@ -26,6 +33,17 @@ android {
         externalNativeBuild {
             cmake {
                 arguments "-DOYSTER_OPENXR_ANDROID_ROOT=${openxrRoot}", '-DANDROID_STL=c++_static'
+            }
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps['storeFile']) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
             }
         }
     }
@@ -41,6 +59,12 @@ android {
         }
         release {
             minifyEnabled false
+            if (keystoreProps['storeFile']) signingConfig signingConfigs.release
+            externalNativeBuild {
+                cmake {
+                    arguments '-DCMAKE_BUILD_TYPE=RelWithDebInfo'  // same code as the tested debug build
+                }
+            }
         }
     }
 
@@ -55,6 +79,10 @@ android {
         main {
             jniLibs.srcDirs "${openxrRoot}/jni"
         }
+    }
+
+    lint {
+        checkReleaseBuilds false  // native app without Java code; lint needs online artifacts
     }
 
     packaging {
