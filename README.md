@@ -6,7 +6,8 @@ standalone headsets (Meta Quest 3, OpenXR), without remaking it.
 
 This repository contains **only our own code, tools, manifests (hashes) and documentation** — no
 Pearl assets or binaries. Bring your own legally obtained installation (Steam AppID 476540; the
-store page is gone, owners can still install it from their library).
+store page is region-restricted - not shown in some countries, e.g. Germany, but e.g. in the
+US).
 
 ## Play it on Meta Quest 3
 

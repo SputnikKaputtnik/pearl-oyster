@@ -7,7 +7,7 @@ sound, unchanged. This package contains no part of Pearl.
 
 You need
   - Pearl from Steam (AppID 476540, build 1340090), installed on this PC. The store page is
-    gone, but owners can still install it from their Steam library.
+    region-restricted (not shown in some countries, e.g. Germany, but e.g. in the US).
   - A Meta Quest 3 (Quest 2/Pro may work, untested) in developer mode, connected by USB:
     Meta Horizon app on the phone > Devices > Developer Mode on.
 
