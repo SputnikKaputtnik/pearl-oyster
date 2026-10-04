@@ -4,6 +4,20 @@ Preservation and native-porting research for *Google Spotlight Stories: Pearl* (
 real-time VR animated short). Long-term goal: run Pearl faithfully and natively on modern
 standalone headsets (Meta Quest 3, OpenXR), without remaking it.
 
+* **The original film, unchanged:** Pearl's own Lua story scripts run in our engine (LuaJIT),
+  with the original models, animation, shaders, post-effect render graphs, particles, lights
+  and sound - the whole film, story transitions frame-exact against captures of the original.
+* **Faithful VR:** the original's stereo path (eye offsets, IPD scaling, per-eye render graph,
+  seated-viewer logic) reproduced from the engine.
+* **Native on Meta Quest 3:** OpenXR app at 72 Hz, eye images 2184x2288, 2x MSAA in tile memory,
+  textures used as they are (DXT5), shaders compiled once and cached.
+* **Smooth:** multithreaded rendering (story/animation and GL driver work on separate cores),
+  resources prefetched and uploaded before shot changes - no hitches.
+* **Options:** interpolated animation (default: original stepped keys), resolution scale, and an
+  eye height offset (default +30 cm, which puts the viewer at eye level with Dad; 0 = original).
+* **Bring your own copy:** the installer finds your Steam installation, verifies it against
+  SHA-256 manifests and copies it to the headset; no Pearl data is distributed.
+
 This repository contains **only our own code, tools, manifests (hashes) and documentation** — no
 Pearl assets or binaries. Bring your own legally obtained installation (Steam AppID 476540; the
 store page is region-restricted - not shown in some countries, e.g. Germany, but e.g. in the
@@ -88,3 +102,11 @@ Preservation, not remake: no changes to animation timing, cadence, choreography,
 materials, shaders (except technically equivalent ports), audio, story logic or triggers.
 Allowed improvements: render resolution, anti-aliasing, texture filtering, display output.
 No AI upscaling or asset replacement.
+
+## AI disclosure
+
+This project was developed with substantial help from an AI coding assistant (Claude by
+Anthropic, via Claude Code): reverse engineering, runtime and installer code, tests and
+documentation. Results were checked against the original (frame comparisons with captures,
+byte-identical regression images, bit-identical audio across decoder changes) and releases are
+tested in the headset by a human.
