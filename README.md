@@ -32,7 +32,7 @@ running natively on a modern standalone headset (Meta Quest 3, OpenXR). Preserve
 This repository contains **only our own code, tools, manifests (hashes) and documentation** — no
 Pearl assets or binaries. Bring your own legally obtained installation (Steam AppID 476540; the
 store page is region-restricted - not shown in some countries, e.g. Germany, but e.g. in the
-US).
+US. Use a VPN to access the Steam page if necessary, the download is free!)
 
 ## Play it on Meta Quest 3
 
