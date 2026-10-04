@@ -8,7 +8,7 @@ data. Pearl (c) Google.*</sub>
 their home on the road - years of their lives, told entirely from inside the car, carried by a
 song they share. Directed by Patrick Osborne for Google Spotlight Stories, it was nominated for
 the **Academy Award for Best Animated Short Film**, the first VR film ever to be nominated for an
-Oscar.
+Oscar, and won the **Emmy Award for Outstanding Innovation in Interactive Storytelling** (2017).
 
 It was made to be watched from the passenger seat. Its VR version, though, only runs on a
 Windows PC with SteamVR - not on the standalone headsets most people use today. Project Oyster
