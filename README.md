@@ -37,6 +37,10 @@ necessary, the download is free!)
 
 ## Play it on Meta Quest 3
 
+![Sara, grown up, at the wheel at dusk](docs/images/pearl-sara-dusk.jpg)
+<sub>*Years later, Sara drives - rendered by this project's engine from the original data.
+Pearl (c) Google.*</sub>
+
 Download the latest [release](https://github.com/SputnikKaputtnik/pearl-oyster/releases), unpack
 it, connect the Quest by USB (developer mode) and double-click `Install Pearl on Quest.cmd`. The
 installer finds your Steam copy, verifies it, copies it to the headset and installs the app.
