@@ -10,9 +10,9 @@ song they share. Directed by Patrick Osborne for Google Spotlight Stories, it wa
 the **Academy Award for Best Animated Short Film**, the first VR film ever to be nominated for an
 Oscar.
 
-It was made to be watched from the passenger seat. Today the film is hard to find, and the
-engine it runs on - a 2016 Windows runtime for SteamVR - is drifting away from the hardware
-people own. Project Oyster keeps that seat open: Pearl's own story, animation, shaders and music,
+It was made to be watched from the passenger seat. Its VR version, though, only runs on a
+Windows PC with SteamVR - not on the standalone headsets most people use today - and its Steam
+page is not visible in every country. Project Oyster keeps that seat open: Pearl's own story, animation, shaders and music,
 running natively on a modern standalone headset (Meta Quest 3, OpenXR). Preserved, not remade.
 
 * **The original film, unchanged:** Pearl's own Lua story scripts run in our engine (LuaJIT),
