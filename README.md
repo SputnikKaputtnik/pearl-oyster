@@ -1,8 +1,19 @@
-# Pearl preservation ("Project Oyster")
+# Pearl, preserved ("Project Oyster")
 
-Preservation and native-porting research for *Google Spotlight Stories: Pearl* (2016,
-real-time VR animated short). Long-term goal: run Pearl faithfully and natively on modern
-standalone headsets (Meta Quest 3, OpenXR), without remaking it.
+![Sara at the wheel on her dad's lap](docs/images/pearl-dad-sara.jpg)
+<sub>*Sara takes the wheel on her dad's lap - rendered by this project's engine from the original
+data. Pearl (c) Google.*</sub>
+
+*Pearl* (2016) follows a girl and her father across the country in the old hatchback that is
+their home on the road - years of their lives, told entirely from inside the car, carried by a
+song they share. Directed by Patrick Osborne for Google Spotlight Stories, it was nominated for
+the **Academy Award for Best Animated Short Film**, the first VR film ever to be nominated for an
+Oscar.
+
+It was made to be watched from the passenger seat. Today the film is hard to find, and the
+engine it runs on - a 2016 Windows runtime for SteamVR - is drifting away from the hardware
+people own. Project Oyster keeps that seat open: Pearl's own story, animation, shaders and music,
+running natively on a modern standalone headset (Meta Quest 3, OpenXR). Preserved, not remade.
 
 * **The original film, unchanged:** Pearl's own Lua story scripts run in our engine (LuaJIT),
   with the original models, animation, shaders, post-effect render graphs, particles, lights
